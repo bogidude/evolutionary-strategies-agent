@@ -5,6 +5,11 @@ from collections import namedtuple
 import numpy as np
 
 from .dist import MasterClient, WorkerClient
+import gym
+import scrimmage
+import scrimmage.utils
+import scrimmage.bindings
+import pdb
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +56,7 @@ class SharedNoiseTable(object):
     def __init__(self):
         import ctypes, multiprocessing
         seed = 123
-        count = 250000000  # 1 gigabyte of 32-bit numbers. Will actually sample 2 gigabytes below.
+        count = 100000000  # 1 gigabyte of 32-bit numbers. Will actually sample 2 gigabytes below.
         logger.info('Sampling {} random numbers with seed {}'.format(count, seed))
         self._shared_mem = multiprocessing.Array(ctypes.c_float, count)
         self.noise = np.ctypeslib.as_array(self._shared_mem.get_obj())
@@ -113,13 +118,43 @@ def batched_weighted_sum(weights, vecs, batch_size):
     return total, num_items_summed
 
 
+def create_scrimmage_env(env_id, visualise, port_num, scrimmage_mission,
+                         timestep, global_sensor, combine_actors):
+    """Add scrimmage to gym registry."""
+    try:
+        return gym.make(env_id)
+    except gym.error.Error:
+        mission_file = \
+            scrimmage.utils.find_mission(scrimmage_mission)
+
+        address = "localhost:" + str(port_num)
+        print('timestep is ', timestep)
+        boole = lambda x: x == "True" or x == "true"
+        gym.envs.register(
+            id=env_id,
+            entry_point='scrimmage.bindings:ScrimmageOpenAIEnv',
+            max_episode_steps=1e9,
+            reward_threshold=1e9,
+            kwargs={"enable_gui": boole(visualise),
+                    "mission_file": mission_file,
+                    "global_sensor": boole(global_sensor),
+                    "timestep": float(timestep),
+                    "combine_actors": boole(combine_actors)}
+        )
+
+        spec = gym.envs.registration.registry.spec(env_id)
+        return gym.make(env_id)
+
+
 def setup(exp, single_threaded):
-    import gym
-    gym.undo_logger_setup()
+    # gym.undo_logger_setup()
     from . import policies, tf_util
 
     config = Config(**exp['config'])
-    env = gym.make(exp['env_id'])
+    if exp['exp_prefix'] == "scrimmage":
+        env = create_scrimmage_env(**exp['env'])
+    else:
+        env = gym.make(exp['env_id'])
     sess = make_session(single_threaded=single_threaded)
     policy = getattr(policies, exp['policy']['type'])(env.observation_space, env.action_space, **exp['policy']['args'])
     tf_util.initialize()
@@ -156,6 +191,7 @@ def run_master(master_redis_cfg, log_dir, exp):
                 tslimit, incr_tslimit_threshold * 100, tslimit_incr_ratio))
     elif config.episode_cutoff_mode == 'env_default':
         tslimit, incr_tslimit_threshold, tslimit_incr_ratio = None, None, None
+        tslimit = 1000
         adaptive_tslimit = False
     else:
         raise NotImplementedError(config.episode_cutoff_mode)
@@ -298,6 +334,7 @@ def run_master(master_redis_cfg, log_dir, exp):
             assert not osp.exists(filename)
             policy.save(filename)
             tlogger.log('Saved snapshot {}'.format(filename))
+            print("Saved snapshot to {}".format(filename))
 
 
 def rollout_and_update_ob_stat(policy, env, timestep_limit, rs, task_ob_stat, calc_obstat_prob):
@@ -310,7 +347,7 @@ def rollout_and_update_ob_stat(policy, env, timestep_limit, rs, task_ob_stat, ca
     return rollout_rews, rollout_len
 
 
-def run_worker(relay_redis_cfg, noise, *, min_task_runtime=.2):
+def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
     logger.info('run_worker: {}'.format(locals()))
     assert isinstance(noise, SharedNoiseTable)
     worker = WorkerClient(relay_redis_cfg)
@@ -367,7 +404,6 @@ def run_worker(relay_redis_cfg, noise, *, min_task_runtime=.2):
                 returns.append([rews_pos.sum(), rews_neg.sum()])
                 signreturns.append([np.sign(rews_pos).sum(), np.sign(rews_neg).sum()])
                 lengths.append([len_pos, len_neg])
-
             worker.push_result(task_id, Result(
                 worker_id=worker_id,
                 noise_inds_n=np.array(noise_inds),

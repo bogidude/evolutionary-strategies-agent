@@ -80,8 +80,8 @@ def single_threaded_session():
 
 ALREADY_INITIALIZED = set()
 def initialize():
-    new_variables = set(tf.all_variables()) - ALREADY_INITIALIZED
-    get_session().run(tf.initialize_variables(new_variables))
+    new_variables = set(tf.global_variables()) - ALREADY_INITIALIZED
+    get_session().run(tf.variables_initializer(new_variables))
     ALREADY_INITIALIZED.update(new_variables)
 
 
@@ -202,7 +202,7 @@ class SetFromFlat(object):
 
 class GetFlat(object):
     def __init__(self, var_list):
-        self.op = tf.concat(0, [tf.reshape(v, [numel(v)]) for v in var_list])
+        self.op = tf.concat([tf.reshape(v, [numel(v)]) for v in var_list], 0)
     def __call__(self):
         return get_session().run(self.op)
 
@@ -216,7 +216,7 @@ def scope_vars(scope, trainable_only):
     The scope can be specified as a string
     """
     return tf.get_collection(
-        tf.GraphKeys.TRAINABLE_VARIABLES if trainable_only else tf.GraphKeys.VARIABLES,
+        tf.GraphKeys.TRAINABLE_VARIABLES if trainable_only else tf.GraphKeys.GLOBAL_VARIABLES,
         scope=scope if isinstance(scope, str) else scope.name
     )
 

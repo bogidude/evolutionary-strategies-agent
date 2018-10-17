@@ -9,6 +9,9 @@ from tensorflow.core.util import event_pb2
 from tensorflow.python import pywrap_tensorflow
 from tensorflow.python.util import compat
 
+# Check if python2 or python3 for api calls
+python_3_api = sys.version_info > (3, 0)
+
 DEBUG = 10
 INFO = 20
 WARN = 30
@@ -73,7 +76,7 @@ def dump_tabular():
     """
     _Logger.CURRENT.dump_tabular()
 
-def log(*args, level=INFO):
+def log(level=INFO, *args):
     """
     Write the sequence of args, with no separators, to the console and output files (if you've configured an output file).
     """
@@ -120,7 +123,11 @@ class _Logger(object):
         self.dir = dir
         self.text_outputs = [sys.stdout]
         if dir is not None:
-            os.makedirs(dir, exist_ok=True)
+            if python_3_api:
+                os.makedirs(dir, exist_ok=True)
+            else:
+                if not os.path.exists(dir):
+                    os.makedirs(dir)
             self.text_outputs.append(open(os.path.join(dir, "log.txt"), "w"))
             self.tbwriter = TbWriter(dir=dir, prefix="events")
         else:
@@ -151,7 +158,7 @@ class _Logger(object):
         if self.tbwriter is not None:
             self.tbwriter.write_values(self.name2val)
             self.name2val.clear()
-    def log(self, *args, level=INFO):
+    def log(self, level=INFO, *args):
         if self.level <= level:
             self._do_log(*args)
 
@@ -169,7 +176,7 @@ class _Logger(object):
     # Misc 
     # ----------------------------------------
     def _do_log(self, *args):
-        self._write_text(*args, '\n')
+        self._write_text(*(list(args) + ['\n']))
         for f in self.text_outputs:
             try: f.flush()
             except OSError: print('Warning! OSError when flushing.')                
