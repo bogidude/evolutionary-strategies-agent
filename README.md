@@ -38,7 +38,7 @@ Now we need to setup the pip packages. I recommend using virtualenv to create a 
 	(evol-strats) $ pip install click \
 			h5py  \
 			tensorflow==1.3.0 \
-			gym[all]==0.10.5 \
+			gym==0.10.8 \
 			grpcio==1.2.1 \
 			protobuf==3.3.0 \
 			redis
@@ -51,6 +51,19 @@ The following command will need sudo if you installed the scrimmage python bindi
 To get out of the virtualenv environment, simply type `deactivate`.
 
 ## Usage
+
+### neovim users
+
+The following will start a new terminal with neovim running inside a tmux session.
+
+    $ python scripts/run_nvim.py \
+        redis_config/redis_master.conf \
+        configurations/action.json \
+        -s exp \
+        -l scripts/local_env_setup.sh \
+        -j 1
+
+### non-neovim users
 
 This needs more work to make it more automated but currently these are the steps to get it running.
 
