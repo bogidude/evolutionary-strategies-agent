@@ -9,7 +9,15 @@ import gym
 import scrimmage
 import scrimmage.utils
 import scrimmage.bindings
+import tensorflow as tf
+import os
 import pdb
+
+try:
+    import lvdb
+except ImportError:
+    pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +171,29 @@ def setup(exp, single_threaded):
 
 
 def run_master(master_redis_cfg, log_dir, exp):
+    """
+
+    Parameters
+    ----------
+
+    master_redis_cfg : dict
+        defines how to connect to master using redis (i.e., the socket path)
+
+    log_dir : str
+        where to log
+
+    exp : dict
+        experiment configuration (hyperparams, gym env, policy, etc)
+        see action.json for an example
+
+    There is a distinction between an experiment and a task. A Task is the
+    set of parameters to use for an experiment. Specifically, given a gym
+    environment, a task is the specific policy to use on that environment.
+    """
+
+    ###########################################################
+    # initialization: logging, environment, noise, connection to master, policy
+    ###########################################################
     logger.info('run_master: {}'.format(locals()))
     from .optimizers import SGD, Adam
     from . import tabular_logger as tlogger
@@ -201,11 +232,20 @@ def run_master(master_redis_cfg, log_dir, exp):
     tstart = time.time()
     master.declare_experiment(exp)
 
+    ###########################################################
+    # main learning loop
+    ###########################################################
+    saver = tf.train.Saver()
+    last_checkpoint = tf.train.latest_checkpoint(os.path.abspath(log_dir))
+    if last_checkpoint:
+        saver.restore(sess, last_checkpoint)
+
     while True:
         step_tstart = time.time()
         theta = policy.get_trainable_flat()
         assert theta.dtype == np.float32
 
+        # declare the task
         curr_task_id = master.declare_task(Task(
             params=theta,
             ob_mean=ob_stat.mean if policy.needs_ob_stat else None,
@@ -233,7 +273,6 @@ def run_master(master_redis_cfg, log_dir, exp):
                     eval_rets.append(result.eval_return)
                     eval_lens.append(result.eval_length)
             else:
-                # The real shit
                 assert (result.noise_inds_n.ndim == 1 and
                         result.returns_n2.shape == result.lengths_n2.shape == (len(result.noise_inds_n), 2))
                 assert result.returns_n2.dtype == np.float32
@@ -295,6 +334,7 @@ def run_master(master_redis_cfg, log_dir, exp):
             logger.info('Increased timestep limit from {} to {}'.format(old_tslimit, tslimit))
 
         step_tend = time.time()
+        tlogger.record_tabular("Iteration", curr_task_id)
         tlogger.record_tabular("EpRewMean", returns_n2.mean())
         tlogger.record_tabular("EpRewStd", returns_n2.std())
         tlogger.record_tabular("EpLenMean", lengths_n2.mean())
@@ -325,16 +365,18 @@ def run_master(master_redis_cfg, log_dir, exp):
         tlogger.record_tabular("TimeElapsed", step_tend - tstart)
         tlogger.dump_tabular()
 
-        if config.snapshot_freq != 0 and curr_task_id % config.snapshot_freq == 0:
-            import os.path as osp
-            filename = osp.join(tlogger.get_dir(), 'snapshot_iter{:05d}_rew{}.h5'.format(
-                curr_task_id,
-                np.nan if not eval_rets else int(np.mean(eval_rets))
-            ))
-            assert not osp.exists(filename)
-            policy.save(filename)
-            tlogger.log('Saved snapshot {}'.format(filename))
-            print("Saved snapshot to {}".format(filename))
+        saver.save(sess, os.path.abspath(log_dir) + "/model.ckpt", global_step=curr_task_id)
+
+        # if config.snapshot_freq != 0 and curr_task_id % config.snapshot_freq == 0:
+        #     import os.path as osp
+        #     filename = osp.join(tlogger.get_dir(), 'snapshot_iter{:05d}_rew{}.h5'.format(
+        #         curr_task_id,
+        #         np.nan if not eval_rets else int(np.mean(eval_rets))
+        #     ))
+        #     assert not osp.exists(filename)
+        #     policy.save(filename)
+        #     tlogger.log('Saved snapshot {}'.format(filename))
+        #     print("Saved snapshot to {}".format(filename))
 
 
 def rollout_and_update_ob_stat(policy, env, timestep_limit, rs, task_ob_stat, calc_obstat_prob):
@@ -348,6 +390,10 @@ def rollout_and_update_ob_stat(policy, env, timestep_limit, rs, task_ob_stat, ca
 
 
 def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
+
+    ###########################################################
+    # get parameters
+    ###########################################################
     logger.info('run_worker: {}'.format(locals()))
     assert isinstance(noise, SharedNoiseTable)
     worker = WorkerClient(relay_redis_cfg)
@@ -358,6 +404,9 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
 
     assert policy.needs_ob_stat == (config.calc_obstat_prob != 0)
 
+    ###########################################################
+    # worker loop 
+    ###########################################################
     while True:
         task_id, task_data = worker.get_current_task()
         task_tstart = time.time()
@@ -389,9 +438,12 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
             task_ob_stat = RunningStat(env.observation_space.shape, eps=0.)  # eps=0 because we're incrementing only
 
             while not noise_inds or time.time() - task_tstart < min_task_runtime:
+
+                # sample the population
                 noise_idx = noise.sample_index(rs, policy.num_params)
                 v = config.noise_stdev * noise.get(noise_idx, policy.num_params)
 
+                # evaluate the fitness
                 policy.set_trainable_flat(task_data.params + v)
                 rews_pos, len_pos = rollout_and_update_ob_stat(
                     policy, env, task_data.timestep_limit, rs, task_ob_stat, config.calc_obstat_prob)
@@ -404,6 +456,7 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 returns.append([rews_pos.sum(), rews_neg.sum()])
                 signreturns.append([np.sign(rews_pos).sum(), np.sign(rews_neg).sum()])
                 lengths.append([len_pos, len_neg])
+
             worker.push_result(task_id, Result(
                 worker_id=worker_id,
                 noise_inds_n=np.array(noise_inds),

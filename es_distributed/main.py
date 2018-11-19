@@ -1,3 +1,4 @@
+"""Main code for starting master and workers."""
 import errno
 import json
 import logging
@@ -9,6 +10,10 @@ import click
 from .dist import RelayClient
 from .es import run_master, run_worker, SharedNoiseTable
 
+try:
+    import lvdb
+except ImportError:
+    pass
 
 def mkdir_p(path):
     try:
@@ -34,6 +39,7 @@ def cli():
 @click.option('--master_socket_path', required=True)
 @click.option('--log_dir')
 def master(exp_str, exp_file, master_socket_path, log_dir):
+    """Load json params and call run_master."""
     # Start the master
     assert (exp_str is None) != (exp_file is None), 'Must provide exp_str xor exp_file to the master'
     if exp_str:
@@ -54,11 +60,22 @@ def master(exp_str, exp_file, master_socket_path, log_dir):
 @click.option('--relay_socket_path', required=True)
 @click.option('--num_workers', type=int, default=0)
 def workers(master_host, master_port, relay_socket_path, num_workers):
+    """Start num_workers that wait for tasks delivered by master.
+
+    The following are started:
+    1 RelayClient - this is the interconnect between master and the workers
+    n workers
+
+    See https://stackoverflow.com/a/24538608 for details on fork.
+    Note that memory prior to the fork is copied and memory is not shared
+    between the forks. os.fork() == 0 for the new process.
+    """
     # Start the relay
     # master_redis_cfg = {'host': master_host, 'port': master_port}
     master_redis_cfg = {'unix_socket_path': relay_socket_path}
     relay_redis_cfg = {'unix_socket_path': relay_socket_path}
     if os.fork() == 0:
+        # This is the interconnect between master and the workers
         RelayClient(master_redis_cfg, relay_redis_cfg).run()
         return
     # Start the workers
