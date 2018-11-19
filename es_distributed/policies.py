@@ -10,6 +10,12 @@ from . import tf_util as U
 
 import gym
 
+try:
+    import lvdb
+except ImportError:
+    pass
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -96,6 +102,7 @@ class Policy:
                 fetched = self.act(ob, random_stream=random_stream, features=last_features[i])
                 ac, value_, last_features[i] = fetched[0], fetched[1], fetched[2:]
                 if discrete_spaces[i] == 0:
+                    ac = np.asarray(ac, dtype=np.int64)
                     converted_actions[i] = ac.argmax()
                 elif discrete_spaces[i] == 1 & tuple_space:
                     converted_actions[i] = np.unravel_index(
@@ -106,8 +113,6 @@ class Policy:
                 else:
                     converted_actions[i] = float(action)
 
-            if not tuple_space:
-                converted_actions = converted_actions[0]
             if save_obs:
                 obs.append(ob)
             ob_, rew, done, info = env.step(converted_actions)

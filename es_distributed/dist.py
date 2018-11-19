@@ -1,3 +1,26 @@
+"""Network interfacing between the master and workers.
+
+Important Parameters
+--------------------
+exp : dict
+    experiment configuration (hyperparams, gym env, policy, etc) see
+    action.json for an example
+
+task : named_tuple
+    the specific parameters defining a policy to use in an experiment.
+
+High Level Overview
+-------------------
+
+MasterClient pushes the initial experiment. Then it puts tasks and gets the
+results.
+
+RelayClient connects MasterClient to WorkerClient. Whenever there is a
+new task on master_redis (from MasterClient), it copies it to local_redis (to
+MasterClient).
+
+WorkerClient provides functions to pull and push tasks/results to master.
+"""
 import logging
 import os
 import pickle
@@ -6,6 +29,12 @@ from collections import deque
 from pprint import pformat
 
 import redis
+
+try:
+    import lvdb
+except ImportError:
+    pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +89,7 @@ def retry_get(pipe, key, tries=300, base_delay=4.):
 
 
 class MasterClient:
+    """Connection to redis master."""
     def __init__(self, master_redis_cfg):
         self.task_counter = 0
         self.master_redis = retry_connect(master_redis_cfg)
@@ -121,7 +151,7 @@ class RelayClient:
             # Log
             batch_sizes.append(len(results))
             if curr_time - last_print_time > 5.0:
-                logger.info('[relay] Average batch size {:.3f}'.format(sum(batch_sizes) / len(batch_sizes)))
+                logger.debug('[relay] Average batch size {:.3f}'.format(sum(batch_sizes) / len(batch_sizes)))
                 last_print_time = curr_time
 
     def _declare_task_local(self, task_id, task_data):
