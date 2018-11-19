@@ -1,12 +1,12 @@
 {
   "config": {
     "calc_obstat_prob": 0.00,
-    "episodes_per_batch": 10000,
-    "eval_prob": 0.003,
+    "episodes_per_batch": 1000,
+    "eval_prob": 0.01,
     "l2coeff": 0.005,
     "noise_stdev": 0.02,
     "snapshot_freq": 1,
-    "timesteps_per_batch": 1000,
+    "timesteps_per_batch": 10000,
     "return_proc_mode": "centered_rank",
     "episode_cutoff_mode": "env_default"
   },
@@ -14,9 +14,9 @@
     "env_id": "scrimmage-v0",
     "visualise": "false",
     "port_num": "12345",
-    "scrimmage_mission": "rl.xml",
+    "scrimmage_mission": "rlsimple.xml",
     "global_sensor": "true",
-    "timestep": 2,
+    "timestep": -0.1,
     "combine_actors": "true"
   },
   "exp_prefix": "scrimmage",
@@ -30,11 +30,11 @@
     "args": {
       "architecture": [
         {
-          "layer_type":"lstm",
+          "layer_type":"fc",
           "width": 256
         },
         {
-          "layer_type":"lstm",
+          "layer_type":"fc",
           "width": 256
         }
       ]
