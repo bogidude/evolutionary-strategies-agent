@@ -240,6 +240,10 @@ def run_master(master_redis_cfg, log_dir, exp):
     if last_checkpoint:
         saver.restore(sess, last_checkpoint)
 
+        # exploit that saver.save appends the global step
+        master.task_counter = 1 + int(last_checkpoint.split('-')[-1])
+        tlogger._Logger.CURRENT.tbwriter.step = master.task_counter
+
     while True:
         step_tstart = time.time()
         theta = policy.get_trainable_flat()
