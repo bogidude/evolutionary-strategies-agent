@@ -31,7 +31,7 @@ Result = namedtuple('Result', [
     'worker_id',
     'noise_inds_n', 'returns_n2', 'signreturns_n2', 'lengths_n2',
     'eval_return', 'eval_length',
-    'ob_sum', 'ob_sumsq', 'ob_count'
+    'ob_sum', 'ob_sumsq', 'ob_count', 'info'
 ])
 
 
@@ -136,7 +136,6 @@ def create_scrimmage_env(env_id, visualise, port_num, scrimmage_mission,
             scrimmage.utils.find_mission(scrimmage_mission)
 
         address = "localhost:" + str(port_num)
-        print('timestep is ', timestep)
         boole = lambda x: x == "True" or x == "true"
         gym.envs.register(
             id=env_id,
@@ -261,6 +260,7 @@ def run_master(master_redis_cfg, log_dir, exp):
         # Pop off results for the current task
         curr_task_results, eval_rets, eval_lens, worker_ids = [], [], [], []
         num_results_skipped, num_episodes_popped, num_timesteps_popped, ob_count_this_batch = 0, 0, 0, 0
+        eval_infos, population_infos = [], []
         while num_episodes_popped < config.episodes_per_batch or num_timesteps_popped < config.timesteps_per_batch:
             # Wait for a result
             task_id, result = master.pop_result()
@@ -276,6 +276,7 @@ def run_master(master_redis_cfg, log_dir, exp):
                 if task_id == curr_task_id:
                     eval_rets.append(result.eval_return)
                     eval_lens.append(result.eval_length)
+                    eval_infos.append(result.info)
             else:
                 assert (result.noise_inds_n.ndim == 1 and
                         result.returns_n2.shape == result.lengths_n2.shape == (len(result.noise_inds_n), 2))
@@ -290,6 +291,7 @@ def run_master(master_redis_cfg, log_dir, exp):
                     curr_task_results.append(result)
                     num_episodes_popped += result_num_eps
                     num_timesteps_popped += result_num_timesteps
+                    population_infos.append(result.info)
                     # Update ob stats
                     if policy.needs_ob_stat and result.ob_count > 0:
                         ob_stat.increment(result.ob_sum, result.ob_sumsq, result.ob_count)
@@ -369,6 +371,16 @@ def run_master(master_redis_cfg, log_dir, exp):
         tlogger.record_tabular("TimeElapsed", step_tend - tstart)
         tlogger.dump_tabular()
 
+        # just record the mean for now
+        def record_info(data_type, dicts):
+            keys = set((k for d in dicts for k in d.keys()))
+            for key in keys:
+                save_key = data_type + "/" + key
+                data = np.array([float(d[key]) for d in dicts if key in d])
+                tlogger.record_tabular(save_key, data.mean())
+        record_info("Eval", eval_infos)
+        record_info("Population", population_infos)
+
         saver.save(sess, os.path.abspath(log_dir) + "/model.ckpt", global_step=curr_task_id)
 
         # if config.snapshot_freq != 0 and curr_task_id % config.snapshot_freq == 0:
@@ -385,12 +397,12 @@ def run_master(master_redis_cfg, log_dir, exp):
 
 def rollout_and_update_ob_stat(policy, env, timestep_limit, rs, task_ob_stat, calc_obstat_prob):
     if policy.needs_ob_stat and calc_obstat_prob != 0 and rs.rand() < calc_obstat_prob:
-        rollout_rews, rollout_len, obs = policy.rollout(
+        rollout_rews, rollout_len, obs, info = policy.rollout(
             env, timestep_limit=timestep_limit, save_obs=True, random_stream=rs)
         task_ob_stat.increment(obs.sum(axis=0), np.square(obs).sum(axis=0), len(obs))
     else:
-        rollout_rews, rollout_len = policy.rollout(env, timestep_limit=timestep_limit, random_stream=rs)
-    return rollout_rews, rollout_len
+        rollout_rews, rollout_len, info = policy.rollout(env, timestep_limit=timestep_limit, random_stream=rs)
+    return rollout_rews, rollout_len, info
 
 
 def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
@@ -421,7 +433,7 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
         if rs.rand() < config.eval_prob:
             # Evaluation: noiseless weights and noiseless actions
             policy.set_trainable_flat(task_data.params)
-            eval_rews, eval_length = policy.rollout(env)  # eval rollouts don't obey task_data.timestep_limit
+            eval_rews, eval_length, info = policy.rollout(env)  # eval rollouts don't obey task_data.timestep_limit
             eval_return = eval_rews.sum()
             logger.info('Eval result: task={} return={:.3f} length={}'.format(task_id, eval_return, eval_length))
             worker.push_result(task_id, Result(
@@ -434,7 +446,8 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 eval_length=eval_length,
                 ob_sum=None,
                 ob_sumsq=None,
-                ob_count=None
+                ob_count=None,
+                info=info
             ))
         else:
             # Rollouts with noise
@@ -449,11 +462,11 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
 
                 # evaluate the fitness
                 policy.set_trainable_flat(task_data.params + v)
-                rews_pos, len_pos = rollout_and_update_ob_stat(
+                rews_pos, len_pos, info = rollout_and_update_ob_stat(
                     policy, env, task_data.timestep_limit, rs, task_ob_stat, config.calc_obstat_prob)
 
                 policy.set_trainable_flat(task_data.params - v)
-                rews_neg, len_neg = rollout_and_update_ob_stat(
+                rews_neg, len_neg, info = rollout_and_update_ob_stat(
                     policy, env, task_data.timestep_limit, rs, task_ob_stat, config.calc_obstat_prob)
 
                 noise_inds.append(noise_idx)
@@ -471,5 +484,6 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 eval_length=None,
                 ob_sum=None if task_ob_stat.count == 0 else task_ob_stat.sum,
                 ob_sumsq=None if task_ob_stat.count == 0 else task_ob_stat.sumsq,
-                ob_count=task_ob_stat.count
+                ob_count=task_ob_stat.count,
+                info=info
             ))
