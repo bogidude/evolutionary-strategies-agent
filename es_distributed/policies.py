@@ -91,6 +91,7 @@ class Policy:
 
         if save_obs:
             obs = []
+        info = [{} for i in range(n)] if n > 1 else {}
 
         converted_actions = [None for _ in range(n)]
         ob = env.reset()
@@ -99,45 +100,62 @@ class Policy:
         last_features = [self.get_initial_features() for _ in range(n)]
         for print_q in range(int(timestep_limit)):
             for i in range(n):
-                fetched = self.act(ob, random_stream=random_stream, features=last_features[i])
+                if tuple_space:
+                    temp_ob = [ob[i]]
+                else:
+                    temp_ob = ob
+
+                fetched = self.act(temp_ob, random_stream=random_stream, features=last_features[i])
                 ac, value_, last_features[i] = fetched[0], fetched[1], fetched[2:]
                 if discrete_spaces[i] == 0:
-                    ac = np.asarray(ac, dtype=np.int64)
-                    converted_actions[i] = ac.argmax()
+                    # ac = np.asarray(ac, dtype=np.int64)
+                    # converted_actions[i] = ac.argmax()
+                    converted_actions[i] = ac
                 elif discrete_spaces[i] == 1 & tuple_space:
                     converted_actions[i] = np.unravel_index(
-                        ac.argmax(), env.action_space.spaces[i].nvec)
+                        ac, env.action_space.spaces[i].nvec)
                 elif discrete_spaces[i] == 1:
                     converted_actions[i] = list(np.unravel_index(
-                        ac.argmax(), env.action_space.nvec))
+                        ac, env.action_space.nvec))
                 else:
                     converted_actions[i] = float(action)
 
             if save_obs:
                 obs.append(ob)
-            ob_, rew, done, info = env.step(converted_actions)
+            # print('act = {}'.format(converted_actions))
+            ob_, rew, done, temp_info = env.step(converted_actions)
+            if tuple_space:
+                for key in temp_info:
+                    for i in range(n):
+                        info[i][key] = temp_info[key][i]
+            else:
+                info.update(temp_info)
+
             ob_ = np.copy(ob_)
 
             if tuple_space:
-                if ('scrimmage_err' in info or
-                   any([s.size == 0 for s in temp_last_state])):
-                    done = True
-                else:
+                if not done:
                     ob = ob_
             else:
                 if not done:
                     ob = [ob_]
-            rews.append(rew)
+
+            if tuple_space:
+                rews.append(temp_info['reward'])
+            else:
+                rews.append(rew)
+
             t += 1
             if render:
                 env.render()
             if done:
+                # print('rew = {}'.format(rew))
                 break
 
         rews = np.array(rews, dtype=np.float32)
         if save_obs:
-            return rews, t, np.array(obs)
-        return rews, t
+            return rews, t, np.array(obs), info
+        return rews, t, info
 
     def act(self, ob, random_stream=None, features=None):
         raise NotImplementedError
@@ -425,7 +443,8 @@ class LSTMPolicy(Policy):
                     self.dist = tf.distributions.Beta(
                         self.stats['alpha'], self.stats['beta'])
 
-            self.sample = tf.squeeze(self.dist.sample([1]))
+            # self.sample = tf.squeeze(self.dist.sample([1]))
+            self.sample = tf.argmax(tf.squeeze(self.logits))
 
             self.vf = \
                 tf.reshape(self.linear(output_values, 1, "value",

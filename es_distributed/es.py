@@ -163,7 +163,19 @@ def setup(exp, single_threaded):
     else:
         env = gym.make(exp['env_id'])
     sess = make_session(single_threaded=single_threaded)
-    policy = getattr(policies, exp['policy']['type'])(env.observation_space, env.action_space, **exp['policy']['args'])
+
+    # in the case that we have Tuple spaces we make the assumption
+    # that all of the spaces are the same so that we can use a shared
+    # model
+    if isinstance(env.action_space, gym.spaces.Tuple):
+        observation_space = env.observation_space.spaces[0]
+        action_space = env.action_space.spaces[0]
+    else:
+        observation_space = env.observation_space
+        action_space = env.action_space
+
+    policy = getattr(policies, exp['policy']['type'])(observation_space, action_space, **exp['policy']['args'])
+
     tf_util.initialize()
 
     return config, env, sess, policy
@@ -261,6 +273,7 @@ def run_master(master_redis_cfg, log_dir, exp):
         curr_task_results, eval_rets, eval_lens, worker_ids = [], [], [], []
         num_results_skipped, num_episodes_popped, num_timesteps_popped, ob_count_this_batch = 0, 0, 0, 0
         eval_infos, population_infos = [], []
+        # lvdb.set_trace()
         while num_episodes_popped < config.episodes_per_batch or num_timesteps_popped < config.timesteps_per_batch:
             # Wait for a result
             task_id, result = master.pop_result()
@@ -291,7 +304,7 @@ def run_master(master_redis_cfg, log_dir, exp):
                     curr_task_results.append(result)
                     num_episodes_popped += result_num_eps
                     num_timesteps_popped += result_num_timesteps
-                    population_infos.append(result.info)
+                    population_infos += result.info
                     # Update ob stats
                     if policy.needs_ob_stat and result.ob_count > 0:
                         ob_stat.increment(result.ob_sum, result.ob_sumsq, result.ob_count)
@@ -405,6 +418,16 @@ def rollout_and_update_ob_stat(policy, env, timestep_limit, rs, task_ob_stat, ca
     return rollout_rews, rollout_len, info
 
 
+def adjust_info(d):
+    # for scrimmage openai environments
+    out = {}
+    out = d['info']
+    for key in d:
+        if key != 'info':
+            out[key] = d[key]
+    return out
+
+
 def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
 
     ###########################################################
@@ -447,11 +470,12 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 ob_sum=None,
                 ob_sumsq=None,
                 ob_count=None,
-                info=info
+                info=adjust_info(info)
             ))
         else:
             # Rollouts with noise
             noise_inds, returns, signreturns, lengths = [], [], [], []
+            infos = []
             task_ob_stat = RunningStat(env.observation_space.shape, eps=0.)  # eps=0 because we're incrementing only
 
             while not noise_inds or time.time() - task_tstart < min_task_runtime:
@@ -462,17 +486,35 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
 
                 # evaluate the fitness
                 policy.set_trainable_flat(task_data.params + v)
-                rews_pos, len_pos, info = rollout_and_update_ob_stat(
+                rews_pos, len_pos, info_pos = rollout_and_update_ob_stat(
                     policy, env, task_data.timestep_limit, rs, task_ob_stat, config.calc_obstat_prob)
 
                 policy.set_trainable_flat(task_data.params - v)
-                rews_neg, len_neg, info = rollout_and_update_ob_stat(
+                rews_neg, len_neg, info_neg = rollout_and_update_ob_stat(
                     policy, env, task_data.timestep_limit, rs, task_ob_stat, config.calc_obstat_prob)
 
-                noise_inds.append(noise_idx)
-                returns.append([rews_pos.sum(), rews_neg.sum()])
-                signreturns.append([np.sign(rews_pos).sum(), np.sign(rews_neg).sum()])
-                lengths.append([len_pos, len_neg])
+
+                tuple_space = isinstance(env.observation_space, gym.spaces.Tuple)
+                if tuple_space:
+                    n = len(env.observation_space.spaces)
+                    for i in range(n):
+                        noise_inds.append(noise_idx)
+                        returns.append([rews_pos[:, i].sum(), rews_neg[:, i].sum()])
+                        signreturns.append([np.sign(rews_pos[:, i]).sum(), np.sign(rews_neg[:, i]).sum()])
+                        lengths.append([len_pos, len_neg])
+
+                        adjusted_info_pos = adjust_info(info_pos[i])
+                        adjusted_info_neg = adjust_info(info_neg[i])
+
+                        infos.append(adjusted_info_pos)
+                        infos.append(adjusted_info_neg)
+                else:
+                    noise_inds.append(noise_idx)
+                    returns.append([rews_pos.sum(), rews_neg.sum()])
+                    signreturns.append([np.sign(rews_pos).sum(), np.sign(rews_neg).sum()])
+                    lengths.append([len_pos, len_neg])
+                    infos.append(info_pos)
+                    infos.append(info_neg)
 
             worker.push_result(task_id, Result(
                 worker_id=worker_id,
@@ -485,5 +527,5 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 ob_sum=None if task_ob_stat.count == 0 else task_ob_stat.sum,
                 ob_sumsq=None if task_ob_stat.count == 0 else task_ob_stat.sumsq,
                 ob_count=task_ob_stat.count,
-                info=info
+                info=infos
             ))
