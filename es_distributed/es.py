@@ -31,7 +31,7 @@ Result = namedtuple('Result', [
     'worker_id',
     'noise_inds_n', 'returns_n2', 'signreturns_n2', 'lengths_n2',
     'eval_return', 'eval_length',
-    'ob_sum', 'ob_sumsq', 'ob_count'
+    'ob_sum', 'ob_sumsq', 'ob_count', 'info'
 ])
 
 
@@ -136,7 +136,6 @@ def create_scrimmage_env(env_id, visualise, port_num, scrimmage_mission,
             scrimmage.utils.find_mission(scrimmage_mission)
 
         address = "localhost:" + str(port_num)
-        print('timestep is ', timestep)
         boole = lambda x: x == "True" or x == "true"
         gym.envs.register(
             id=env_id,
@@ -164,7 +163,19 @@ def setup(exp, single_threaded):
     else:
         env = gym.make(exp['env_id'])
     sess = make_session(single_threaded=single_threaded)
-    policy = getattr(policies, exp['policy']['type'])(env.observation_space, env.action_space, **exp['policy']['args'])
+
+    # in the case that we have Tuple spaces we make the assumption
+    # that all of the spaces are the same so that we can use a shared
+    # model
+    if isinstance(env.action_space, gym.spaces.Tuple):
+        observation_space = env.observation_space.spaces[0]
+        action_space = env.action_space.spaces[0]
+    else:
+        observation_space = env.observation_space
+        action_space = env.action_space
+
+    policy = getattr(policies, exp['policy']['type'])(observation_space, action_space, **exp['policy']['args'])
+
     tf_util.initialize()
 
     return config, env, sess, policy
@@ -240,6 +251,10 @@ def run_master(master_redis_cfg, log_dir, exp):
     if last_checkpoint:
         saver.restore(sess, last_checkpoint)
 
+        # exploit that saver.save appends the global step
+        master.task_counter = 1 + int(last_checkpoint.split('-')[-1])
+        tlogger._Logger.CURRENT.tbwriter.step = master.task_counter
+
     while True:
         step_tstart = time.time()
         theta = policy.get_trainable_flat()
@@ -257,6 +272,8 @@ def run_master(master_redis_cfg, log_dir, exp):
         # Pop off results for the current task
         curr_task_results, eval_rets, eval_lens, worker_ids = [], [], [], []
         num_results_skipped, num_episodes_popped, num_timesteps_popped, ob_count_this_batch = 0, 0, 0, 0
+        eval_infos, population_infos = [], []
+        # lvdb.set_trace()
         while num_episodes_popped < config.episodes_per_batch or num_timesteps_popped < config.timesteps_per_batch:
             # Wait for a result
             task_id, result = master.pop_result()
@@ -272,6 +289,7 @@ def run_master(master_redis_cfg, log_dir, exp):
                 if task_id == curr_task_id:
                     eval_rets.append(result.eval_return)
                     eval_lens.append(result.eval_length)
+                    eval_infos.append(result.info)
             else:
                 assert (result.noise_inds_n.ndim == 1 and
                         result.returns_n2.shape == result.lengths_n2.shape == (len(result.noise_inds_n), 2))
@@ -286,6 +304,7 @@ def run_master(master_redis_cfg, log_dir, exp):
                     curr_task_results.append(result)
                     num_episodes_popped += result_num_eps
                     num_timesteps_popped += result_num_timesteps
+                    population_infos += result.info
                     # Update ob stats
                     if policy.needs_ob_stat and result.ob_count > 0:
                         ob_stat.increment(result.ob_sum, result.ob_sumsq, result.ob_count)
@@ -365,6 +384,16 @@ def run_master(master_redis_cfg, log_dir, exp):
         tlogger.record_tabular("TimeElapsed", step_tend - tstart)
         tlogger.dump_tabular()
 
+        # just record the mean for now
+        def record_info(data_type, dicts):
+            keys = set((k for d in dicts for k in d.keys()))
+            for key in keys:
+                save_key = data_type + "/" + key
+                data = np.array([float(d[key]) for d in dicts if key in d])
+                tlogger.record_tabular(save_key, data.mean())
+        record_info("Eval", eval_infos)
+        record_info("Population", population_infos)
+
         saver.save(sess, os.path.abspath(log_dir) + "/model.ckpt", global_step=curr_task_id)
 
         # if config.snapshot_freq != 0 and curr_task_id % config.snapshot_freq == 0:
@@ -381,12 +410,22 @@ def run_master(master_redis_cfg, log_dir, exp):
 
 def rollout_and_update_ob_stat(policy, env, timestep_limit, rs, task_ob_stat, calc_obstat_prob):
     if policy.needs_ob_stat and calc_obstat_prob != 0 and rs.rand() < calc_obstat_prob:
-        rollout_rews, rollout_len, obs = policy.rollout(
+        rollout_rews, rollout_len, obs, info = policy.rollout(
             env, timestep_limit=timestep_limit, save_obs=True, random_stream=rs)
         task_ob_stat.increment(obs.sum(axis=0), np.square(obs).sum(axis=0), len(obs))
     else:
-        rollout_rews, rollout_len = policy.rollout(env, timestep_limit=timestep_limit, random_stream=rs)
-    return rollout_rews, rollout_len
+        rollout_rews, rollout_len, info = policy.rollout(env, timestep_limit=timestep_limit, random_stream=rs)
+    return rollout_rews, rollout_len, info
+
+
+def adjust_info(d):
+    # for scrimmage openai environments
+    out = {}
+    out = d['info']
+    for key in d:
+        if key != 'info':
+            out[key] = d[key]
+    return out
 
 
 def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
@@ -417,7 +456,7 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
         if rs.rand() < config.eval_prob:
             # Evaluation: noiseless weights and noiseless actions
             policy.set_trainable_flat(task_data.params)
-            eval_rews, eval_length = policy.rollout(env)  # eval rollouts don't obey task_data.timestep_limit
+            eval_rews, eval_length, info = policy.rollout(env)  # eval rollouts don't obey task_data.timestep_limit
             eval_return = eval_rews.sum()
             logger.info('Eval result: task={} return={:.3f} length={}'.format(task_id, eval_return, eval_length))
             worker.push_result(task_id, Result(
@@ -430,11 +469,13 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 eval_length=eval_length,
                 ob_sum=None,
                 ob_sumsq=None,
-                ob_count=None
+                ob_count=None,
+                info=adjust_info(info)
             ))
         else:
             # Rollouts with noise
             noise_inds, returns, signreturns, lengths = [], [], [], []
+            infos = []
             task_ob_stat = RunningStat(env.observation_space.shape, eps=0.)  # eps=0 because we're incrementing only
 
             while not noise_inds or time.time() - task_tstart < min_task_runtime:
@@ -445,17 +486,35 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
 
                 # evaluate the fitness
                 policy.set_trainable_flat(task_data.params + v)
-                rews_pos, len_pos = rollout_and_update_ob_stat(
+                rews_pos, len_pos, info_pos = rollout_and_update_ob_stat(
                     policy, env, task_data.timestep_limit, rs, task_ob_stat, config.calc_obstat_prob)
 
                 policy.set_trainable_flat(task_data.params - v)
-                rews_neg, len_neg = rollout_and_update_ob_stat(
+                rews_neg, len_neg, info_neg = rollout_and_update_ob_stat(
                     policy, env, task_data.timestep_limit, rs, task_ob_stat, config.calc_obstat_prob)
 
-                noise_inds.append(noise_idx)
-                returns.append([rews_pos.sum(), rews_neg.sum()])
-                signreturns.append([np.sign(rews_pos).sum(), np.sign(rews_neg).sum()])
-                lengths.append([len_pos, len_neg])
+
+                tuple_space = isinstance(env.observation_space, gym.spaces.Tuple)
+                if tuple_space:
+                    n = len(env.observation_space.spaces)
+                    for i in range(n):
+                        noise_inds.append(noise_idx)
+                        returns.append([rews_pos[:, i].sum(), rews_neg[:, i].sum()])
+                        signreturns.append([np.sign(rews_pos[:, i]).sum(), np.sign(rews_neg[:, i]).sum()])
+                        lengths.append([len_pos, len_neg])
+
+                        adjusted_info_pos = adjust_info(info_pos[i])
+                        adjusted_info_neg = adjust_info(info_neg[i])
+
+                        infos.append(adjusted_info_pos)
+                        infos.append(adjusted_info_neg)
+                else:
+                    noise_inds.append(noise_idx)
+                    returns.append([rews_pos.sum(), rews_neg.sum()])
+                    signreturns.append([np.sign(rews_pos).sum(), np.sign(rews_neg).sum()])
+                    lengths.append([len_pos, len_neg])
+                    infos.append(info_pos)
+                    infos.append(info_neg)
 
             worker.push_result(task_id, Result(
                 worker_id=worker_id,
@@ -467,5 +526,6 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 eval_length=None,
                 ob_sum=None if task_ob_stat.count == 0 else task_ob_stat.sum,
                 ob_sumsq=None if task_ob_stat.count == 0 else task_ob_stat.sumsq,
-                ob_count=task_ob_stat.count
+                ob_count=task_ob_stat.count,
+                info=infos
             ))
