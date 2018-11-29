@@ -1,5 +1,6 @@
 import logging
 import time
+import sys
 from collections import namedtuple
 
 import numpy as np
@@ -276,6 +277,9 @@ def run_master(master_redis_cfg, log_dir, exp):
         # lvdb.set_trace()
         while num_episodes_popped < config.episodes_per_batch or num_timesteps_popped < config.timesteps_per_batch:
             # Wait for a result
+            sys.stdout.write(
+                'num_episodes popped is ' + str(num_episodes_popped) + '\r')
+            sys.stdout.flush()
             task_id, result = master.pop_result()
             assert isinstance(task_id, int) and isinstance(result, Result)
             assert (result.eval_return is None) == (result.eval_length is None)
@@ -382,7 +386,6 @@ def run_master(master_redis_cfg, log_dir, exp):
 
         tlogger.record_tabular("TimeElapsedThisIter", step_tend - step_tstart)
         tlogger.record_tabular("TimeElapsed", step_tend - tstart)
-        tlogger.dump_tabular()
 
         # just record the mean for now
         def record_info(data_type, dicts):
@@ -393,6 +396,8 @@ def run_master(master_redis_cfg, log_dir, exp):
                 tlogger.record_tabular(save_key, data.mean())
         record_info("Eval", eval_infos)
         record_info("Population", population_infos)
+
+        tlogger.dump_tabular()
 
         saver.save(sess, os.path.abspath(log_dir) + "/model.ckpt", global_step=curr_task_id)
 
@@ -420,8 +425,10 @@ def rollout_and_update_ob_stat(policy, env, timestep_limit, rs, task_ob_stat, ca
 
 def adjust_info(d):
     # for scrimmage openai environments
-    out = {}
-    out = d['info']
+    try:
+        out = d['info']
+    except KeyError:
+        out = {}
     for key in d:
         if key != 'info':
             out[key] = d[key]
@@ -457,21 +464,28 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
             # Evaluation: noiseless weights and noiseless actions
             policy.set_trainable_flat(task_data.params)
             eval_rews, eval_length, info = policy.rollout(env)  # eval rollouts don't obey task_data.timestep_limit
-            eval_return = eval_rews.sum()
-            logger.info('Eval result: task={} return={:.3f} length={}'.format(task_id, eval_return, eval_length))
-            worker.push_result(task_id, Result(
-                worker_id=worker_id,
-                noise_inds_n=None,
-                returns_n2=None,
-                signreturns_n2=None,
-                lengths_n2=None,
-                eval_return=eval_return,
-                eval_length=eval_length,
-                ob_sum=None,
-                ob_sumsq=None,
-                ob_count=None,
-                info=adjust_info(info)
-            ))
+
+            if not isinstance(info, list):
+                info = [info]
+            eval_rews = [eval_rews[:, i] for i in range(len(info))]
+            eval_length = [eval_length for i in range(len(info))]
+
+            for i in range(len(info)):
+                eval_return = eval_rews[i].sum()
+                logger.info('Eval result: task={} return={:.3f} length={}'.format(task_id, eval_return, eval_length))
+                worker.push_result(task_id, Result(
+                    worker_id=worker_id,
+                    noise_inds_n=None,
+                    returns_n2=None,
+                    signreturns_n2=None,
+                    lengths_n2=None,
+                    eval_return=eval_return,
+                    eval_length=eval_length[i],
+                    ob_sum=None,
+                    ob_sumsq=None,
+                    ob_count=None,
+                    info=adjust_info(info[i])
+                ))
         else:
             # Rollouts with noise
             noise_inds, returns, signreturns, lengths = [], [], [], []
