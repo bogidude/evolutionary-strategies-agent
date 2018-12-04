@@ -402,33 +402,43 @@ class LSTMPolicy(Policy):
             else:
                 self.stats = {}
                 use_normal = True
-                if use_normal:
-                    self.stats['mean'] = \
-                        self.linear(output_values, 1, "mean",
-                               self.normalized_columns_initializer(0.01),
-                               bias_init=0)
-                    self.stats['stdev'] = \
-                        tf.exp(self.linear(output_values, 1, "stdev",
-                                      self.normalized_columns_initializer(0.01),
-                                      bias_init=0))
-                    self.dist = tf.contrib.distributions.Normal(
-                        self.stats['mean'], self.stats['stdev'])
+                use_dist = False
+                if use_dist:
+                    if use_normal:
+                        self.stats['mean'] = \
+                            self.linear(output_values, 1, "mean",
+                                   self.normalized_columns_initializer(0.01),
+                                   bias_init=0)
+                        self.stats['stdev'] = \
+                            tf.exp(self.linear(output_values, 1, "stdev",
+                                          self.normalized_columns_initializer(0.01),
+                                          bias_init=0))
+                        self.dist = tf.contrib.distributions.Normal(
+                            self.stats['mean'], self.stats['stdev'])
+                    else:
+                        self.stats['alpha'] = \
+                            tf.exp(self.linear(output_values, 1, "alpha",
+                                          self.normalized_columns_initializer(0.01),
+                                          bias_init=0))
+                        self.stats['beta'] = \
+                            tf.exp(self.linear(output_values, 1, "beta",
+                                          self.normalized_columns_initializer(0.01),
+                                          bias_init=0))
+                        self.dist = tf.distributions.Beta(
+                            self.stats['alpha'], self.stats['beta'])
                 else:
-                    self.stats['alpha'] = \
-                        tf.exp(self.linear(output_values, 1, "alpha",
-                                      self.normalized_columns_initializer(0.01),
-                                      bias_init=0))
-                    self.stats['beta'] = \
-                        tf.exp(self.linear(output_values, 1, "beta",
-                                      self.normalized_columns_initializer(0.01),
-                                      bias_init=0))
-                    self.dist = tf.distributions.Beta(
-                        self.stats['alpha'], self.stats['beta'])
+                    self.out = \
+                        self.linear(output_values, 1, "continuous_output",
+                                self.normalized_columns_initializer(0.01),
+                                bias_init=0)
+            if use_dist:
+                self.sample = self.out
+            else:
+                self.sample = tf.squeeze(self.dist.sample([1]))
 
-            self.sample = tf.squeeze(self.dist.sample([1]))
 
             self.vf = \
-                tf.reshape(self.linear(output_values, 1, "value",
+                tf.reshape(self.linear(output_values, len(ac_space.low), "value",
                                   self.normalized_columns_initializer(1.0)), [-1])
             self.var_list = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,
                                               tf.get_variable_scope().name)
