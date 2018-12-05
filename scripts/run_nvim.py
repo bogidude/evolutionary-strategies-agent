@@ -1,3 +1,4 @@
+#!/usr/bin/env python 
 import subprocess as sp
 import os
 import argparse
@@ -46,6 +47,10 @@ def main():
     parser.add_argument(
         "-l", '--log_dir', default="",
         help="where to store tensorboard output")
+    parser.add_argument(
+        "-n", '--new_terminal', action="store_true",
+        help=("whether to start tmux detached in the current terminal "
+              "(default) or in a new gnome-terminal"))
 
     NVIM_LISTEN_ADDRESS = \
         '/tmp/nvim_evolutionary_strat' + str(random.randint(0, 1e12))
@@ -127,8 +132,12 @@ def main():
             nvim_insert_mode() + \
             "tensorboard --logdir " + args.log_dir + "<cr>"
 
-    sp.check_call(["gnome-terminal", "-x",
-                   "tmux", "new", "-s", args.session_name])
+    if args.new_terminal:
+        sp.check_call(["gnome-terminal", "-x",
+                       "tmux", "new", "-s", args.session_name])
+    else: 
+        sp.check_call(["tmux", "new", "-s", args.session_name, '-d'])
+
     if args.local_env_setup:
         sp.check_call(
             ["tmux", "send-keys", 'source ' + args.local_env_setup])
