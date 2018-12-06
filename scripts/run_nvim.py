@@ -188,8 +188,8 @@ def main():
                     num_workers = 24 if i > 0 else 22
                     new_tmux_term(addr)
                     source_env_file()
-                    send_tmux_keys("ssh {} '{}'<cr>".format(
-                        ssh_login(addr),
+                    send_tmux_keys("ssh {} 'source {} && {}'".format(
+                        ssh_login(addr), args.local_env_setup,
                         start_cmd + " --num_workers " +
                         str(num_workers)))
             return None
