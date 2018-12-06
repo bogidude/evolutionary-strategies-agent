@@ -1,1 +1,1 @@
-# your environment setup for a new shell window
+# your environment setup for a new shell window

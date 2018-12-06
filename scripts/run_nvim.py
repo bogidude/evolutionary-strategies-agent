@@ -106,7 +106,7 @@ def main():
         return os.environ['USER'] + '@' + address
 
     def start_redis(addresses):
-        cmd = "redis-server " + args.redis_conf
+        cmd = "redis-server " + args.redis_conf + " --protected-mode no "
         if addresses:
             cmd = " ssh {} '{}'".format(ssh_login(addresses[0]), cmd)
 
@@ -131,12 +131,13 @@ def main():
         else:
             return ""
 
-    def start_master(addresses):
+    def start_master(addresses, socket_file, port):
         start_cmd = \
             ("python -m es_distributed.main master "
-             "--master_socket_path /tmp/redis.sock "
-             "--log_dir " + args.log_dir + " " +
-             "--exp_file " + args.exp_file)
+             " --master_socket_path " + socket_file +
+             " --master_port " + str(port) + " " +
+             " --log_dir " + args.log_dir + " " +
+             " --exp_file " + args.exp_file)
         if addresses:
             start_cmd = \
                 "ssh {} 'source {} && {}'".format(
@@ -150,28 +151,31 @@ def main():
             source_env_file()
             send_tmux_keys(start_cmd)
 
-    def start_workers(addresses):
+    def start_workers(addresses, socket_file, port):
+        host = addresses[0] if addresses else 'localhost'
         start_cmd = \
             (" python -m es_distributed.main workers "
-             "--master_host localhost --relay_socket_path "
-             "/tmp/redis.sock ")
+             "--master_host " + host + " " +
+             "--master_port " + port + " " +
+             "--relay_socket_path " + socket_file)
 
         if args.nvim:
             if not addresses:
-                return new_nvim_term() + nvim_rename_buffer("worker") + \
-                    source_env_file() + nvim_insert_mode() + start_cmd + \
-                    "--num_workers " + str(args.num_workers) + "<cr>"
+                return [new_nvim_term() + nvim_rename_buffer("worker") +
+                        source_env_file() + nvim_insert_mode() + start_cmd +
+                        "--num_workers " + str(args.num_workers) + "<cr>"]
             else:
+                out = []
                 for i, addr in enumerate(addresses):
                     # 2 taken with redis/master on first worker
                     num_workers = 24 if i > 0 else 22
-                    out = new_nvim_term() + nvim_rename_buffer(addr) + \
-                        nvim_insert_mode() + source_env_file() + \
+                    out.append(new_nvim_term() + nvim_rename_buffer(addr) +
+                        nvim_insert_mode() + source_env_file() +
                         " ssh {} 'source {} && {}'<cr>".format(
                             ssh_login(addr),
                             args.local_env_setup,
                             start_cmd + " --num_workers " +
-                            str(num_workers))
+                            str(num_workers)))
             return out
         else:
             if not addresses:
@@ -201,7 +205,10 @@ def main():
             send_tmux_keys(cmd)
 
     def get_ending_digits(s):
-        prefix, digits = re.match(r'(.*)(\d+)', s).groups()
+        r = re.compile(r'\d')
+        i = next((i for i in range(len(s) - 1, -1, -1) if not r.match(s[i])))
+        prefix = s[:i + 1]
+        digits = s[i + 1:]
         return prefix, int(digits)
 
     def parse_addresses():
@@ -212,7 +219,9 @@ def main():
                     beg, end = addr.split("-")
                     beg_prefix, beg_digit = get_ending_digits(beg)
                     end_prefix, end_digit = get_ending_digits(end)
-                    assert beg_prefix == end_prefix
+                    err_msg = "node prefixes don't match {} vs {}".format(
+                        beg_prefix, end_prefix)
+                    assert beg_prefix == end_prefix, err_msg
                     addresses += [beg_prefix + str(i)
                                   for i in range(beg_digit, end_digit + 1)]
                 else:
@@ -236,6 +245,14 @@ def main():
 
         send_tmux_enter()
 
+    def get_config_val(prefix):
+        r = re.compile(prefix + r'\s+(.*)')
+        with open(args.redis_conf, 'r') as f:
+            return next((r.match(l) for l in f.read().splitlines()
+                         if r.match(l))).group(1)
+
+    socket_file = get_config_val('unixsocket')
+    port = get_config_val('port')
     addresses = parse_addresses()
     start_tmux()
 
@@ -246,20 +263,20 @@ def main():
 
         start_term = "<esc>:term<cr>"
 
-        lvdb.set_trace()
         send_nvim_keys(start_term + start_redis(addresses))
-        if not addresses:
-            send_nvim_keys(new_nvim_term() + start_tensorboard())
+        send_nvim_keys(new_nvim_term() + start_tensorboard())
+        send_nvim_keys(
+            new_nvim_term() + start_master(addresses, socket_file, port))
 
-        send_nvim_keys(new_nvim_term() + start_master(addresses))
-        send_nvim_keys(start_workers(addresses))
+        for cmd in start_workers(addresses, socket_file, port):
+            send_nvim_keys(cmd)
 
     else:
         source_env_file()
         start_redis(addresses)
         start_tensorboard()
-        start_master(addresses)
-        start_workers(addresses)
+        start_master(addresses, socket_file, port)
+        start_workers(addresses, socket_file, port)
 
 
 if __name__ == '__main__':
