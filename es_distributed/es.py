@@ -467,6 +467,10 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
 
             if not isinstance(info, list):
                 info = [info]
+                # convert to column vec for compatiblity with multi-vehicle
+                # case
+                eval_rews = eval_rews[:, np.newaxis] 
+
             eval_rews = [eval_rews[:, i] for i in range(len(info))]
             eval_length = [eval_length for i in range(len(info))]
 
