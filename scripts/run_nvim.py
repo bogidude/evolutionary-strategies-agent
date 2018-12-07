@@ -105,8 +105,11 @@ def main():
     def ssh_login(address):
         return os.environ['USER'] + '@' + address
 
-    def start_redis(addresses):
-        cmd = "redis-server " + args.redis_conf + " --protected-mode no "
+    def start_redis(addresses, port):
+        cmd = "redis-server " + args.redis_conf
+        # if port:
+        #     cmd += " --protected-mode no "
+
         if addresses:
             cmd = " ssh {} '{}'".format(ssh_login(addresses[0]), cmd)
 
@@ -132,12 +135,16 @@ def main():
             return ""
 
     def start_master(addresses, socket_file, port):
+        host = addresses[0] if addresses else 'localhost'
         start_cmd = \
             ("python -m es_distributed.main master "
              " --master_socket_path " + socket_file +
-             " --master_port " + str(port) + " " +
+             " --master_host " + host +
              " --log_dir " + args.log_dir + " " +
              " --exp_file " + args.exp_file)
+        if port: 
+            start_cmd += " --master_port " + str(port) + " "
+
         if addresses:
             start_cmd = \
                 "ssh {} 'source {} && {}'".format(
@@ -156,8 +163,9 @@ def main():
         start_cmd = \
             (" python -m es_distributed.main workers "
              "--master_host " + host + " " +
-             "--master_port " + port + " " +
              "--relay_socket_path " + socket_file)
+        if port:
+             start_cmd += " --master_port " + port
 
         if args.nvim:
             if not addresses:
@@ -252,7 +260,16 @@ def main():
                          if r.match(l))).group(1)
 
     socket_file = get_config_val('unixsocket')
-    port = get_config_val('port')
+
+    try:
+        port = get_config_val('port')
+    except StopIteration:
+        port = '6379'
+
+    if port == '0':
+        port = None
+
+
     addresses = parse_addresses()
     start_tmux()
 
@@ -263,7 +280,7 @@ def main():
 
         start_term = "<esc>:term<cr>"
 
-        send_nvim_keys(start_term + start_redis(addresses))
+        send_nvim_keys(start_term + start_redis(addresses, port))
         send_nvim_keys(new_nvim_term() + start_tensorboard())
         send_nvim_keys(
             new_nvim_term() + start_master(addresses, socket_file, port))
@@ -273,7 +290,7 @@ def main():
 
     else:
         source_env_file()
-        start_redis(addresses)
+        start_redis(addresses, port)
         start_tensorboard()
         start_master(addresses, socket_file, port)
         start_workers(addresses, socket_file, port)
