@@ -57,7 +57,7 @@ def master(exp_str, exp_file, master_socket_path, log_dir, master_host, master_p
     if master_port:
         redis_cfg = {'host': master_host, 'port': master_port}
     else:
-        redis_cfg = {'unix_socket_path': master_socket_path} 
+        redis_cfg = {'unix_socket_path': master_socket_path}
     run_master(redis_cfg, log_dir, exp)
 
 
@@ -82,8 +82,8 @@ def workers(master_host, master_port, relay_socket_path, num_workers):
     if master_port:
         master_redis_cfg = {'host': master_host, 'port': master_port}
         relay_redis_cfg = {'host': master_host, 'port': master_port}
-    else: 
-        relay_redis_cfg = {'unix_socket_path': relay_socket_path}
+    else:
+        master_redis_cfg = {'unix_socket_path': relay_socket_path}
         relay_redis_cfg = {'unix_socket_path': relay_socket_path}
     if os.fork() == 0:
         # This is the interconnect between master and the workers

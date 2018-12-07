@@ -165,13 +165,13 @@ def main():
              "--master_host " + host + " " +
              "--relay_socket_path " + socket_file)
         if port:
-             start_cmd += " --master_port " + port
+            start_cmd += " --master_port " + port
 
         if args.nvim:
             if not addresses:
                 return [new_nvim_term() + nvim_rename_buffer("worker") +
                         source_env_file() + nvim_insert_mode() + start_cmd +
-                        "--num_workers " + str(args.num_workers) + "<cr>"]
+                        " --num_workers " + str(args.num_workers) + "<cr>"]
             else:
                 out = []
                 for i, addr in enumerate(addresses):
