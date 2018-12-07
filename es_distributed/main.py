@@ -37,8 +37,10 @@ def cli():
 @click.option('--exp_str')
 @click.option('--exp_file')
 @click.option('--master_socket_path', required=True)
+@click.option('--master_port', default=None)
+@click.option('--master_host')
 @click.option('--log_dir')
-def master(exp_str, exp_file, master_socket_path, log_dir):
+def master(exp_str, exp_file, master_socket_path, log_dir, master_host, master_port):
     """Load json params and call run_master."""
     # Start the master
     assert (exp_str is None) != (exp_file is None), 'Must provide exp_str xor exp_file to the master'
@@ -51,12 +53,17 @@ def master(exp_str, exp_file, master_socket_path, log_dir):
         assert False
     log_dir = os.path.expanduser(log_dir) if log_dir else '/tmp/es_master_{}'.format(os.getpid())
     mkdir_p(log_dir)
-    run_master({'unix_socket_path': master_socket_path}, log_dir, exp)
+
+    if master_port:
+        redis_cfg = {'host': master_host, 'port': master_port}
+    else:
+        redis_cfg = {'unix_socket_path': master_socket_path} 
+    run_master(redis_cfg, log_dir, exp)
 
 
 @cli.command()
 @click.option('--master_host', required=True)
-@click.option('--master_port', default=6379, type=int)
+@click.option('--master_port', default=None, type=int)
 @click.option('--relay_socket_path', required=True)
 @click.option('--num_workers', type=int, default=0)
 def workers(master_host, master_port, relay_socket_path, num_workers):
@@ -72,8 +79,12 @@ def workers(master_host, master_port, relay_socket_path, num_workers):
     """
     # Start the relay
     # master_redis_cfg = {'host': master_host, 'port': master_port}
-    master_redis_cfg = {'unix_socket_path': relay_socket_path}
-    relay_redis_cfg = {'unix_socket_path': relay_socket_path}
+    if master_port:
+        master_redis_cfg = {'host': master_host, 'port': master_port}
+        relay_redis_cfg = {'host': master_host, 'port': master_port}
+    else: 
+        relay_redis_cfg = {'unix_socket_path': relay_socket_path}
+        relay_redis_cfg = {'unix_socket_path': relay_socket_path}
     if os.fork() == 0:
         # This is the interconnect between master and the workers
         RelayClient(master_redis_cfg, relay_redis_cfg).run()

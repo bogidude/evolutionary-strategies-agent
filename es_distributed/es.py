@@ -268,7 +268,7 @@ def run_master(master_redis_cfg, log_dir, exp):
             ob_std=ob_stat.std if policy.needs_ob_stat else None,
             timestep_limit=tslimit
         ))
-        tlogger.log('********** Iteration {} **********'.format(curr_task_id))
+        tlogger.info('********** Iteration {} **********'.format(curr_task_id))
 
         # Pop off results for the current task
         curr_task_results, eval_rets, eval_lens, worker_ids = [], [], [], []

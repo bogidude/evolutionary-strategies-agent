@@ -8,13 +8,13 @@ Please follow the installations and usage instructions below to see if it works 
 
 The following work still needs to be done:
 
-* Figure out how to setup redis to work on the cluster - whether or not it opens ports, etc.
+* Figure out how to setup redis to work on the cluster - whether or not it opens ports, etc (done)
 * Figure out what neural network structure works best with evolutionary strategies
 * Use tensorflow APIs so we don't define our own linear layer, flatten, normalized columns, etc.
-* Update the running script to accept arguments like number of workers, where to connect for redis, save location
-* Figure out how the network gets saved and loaded (look in policies.py)
+* Update the running script to accept arguments like number of workers, where to connect for redis, save location (done)
+* Figure out how the network gets saved and loaded (done)
 * Reduce the code copied from A3C and try to import it from A3C instead? (import models from model.py if possible, etc.)
-* Double check multiple agents work.
+* Double check multiple agents work (done)
 * Turn this into a python package that can be installed?
 
 ## Installation Instructions
@@ -41,7 +41,8 @@ Now we need to setup the pip packages. I recommend using virtualenv to create a 
 			gym==0.10.8 \
 			grpcio==1.2.1 \
 			protobuf==3.3.0 \
-			redis
+			redis \
+            psutils
 	(evol-strats) $ cd /path/to/scrimmage/python
 
 The following command will need sudo if you installed the scrimmage python bindings for your system python to overwrite it in the virtualenv environment folder. It won't overwrite your system's scrimmage python binding. You might also need to run `scrimmage/setup/install-binaries.sh` with python 2 dependencies. More info on how to do that is located [here](https://github.com/gtri/scrimmage#install-binary-dependencies)
@@ -52,33 +53,42 @@ To get out of the virtualenv environment, simply type `deactivate`.
 
 ## Usage
 
-### neovim users
+If you want to run something locally, ``redis_master.conf`` should have these lines:
 
-The following will start a new terminal with neovim running inside a tmux session.
+    bind 127.0.0.1
+    port 0
 
-    $ python scripts/run_nvim.py \
+otherwise, bind should be the ip address of the host of your redis server and master node
+and port should be whatever you want your traffic to go through. Also, setup your
+``local_env_setup.sh`` file to source your environment:
+
+    # an example
+    source ~/.bashrc
+    source ~/venvs/evol-strats/bin/activate
+    cd ~/scrimmage/evolutionary-strategies-agent
+
+If you use neovim with terminal mode, there is an additional dependency:
+
+    # additionally install neovim remote
+    $ pip install neovim-remote
+
+For local training, do the following:
+
+    $ python scripts/run_es.py \
         redis_config/redis_master.conf \
-        configurations/action.json \
+        configurations/scrimmage.json \
         -s exp \
         -l scripts/local_env_setup.sh \
         -j 1
 
-### non-neovim users
+For remote training, say training on nodes xxx.xxx.xxx.3 through xxx.xxx.xxx.8, do
 
-This needs more work to make it more automated but currently these are the steps to get it running.
-
-In one terminal, run the following:
-
-	$ redis-server /path/to/evolution-strategies-agent/redis_config/redis_master.conf
-
-This starts up the redis server connecting on a socket file (I think that is all.).
-
-Next, we will run evolutionary strategies using:
-	
-	$ cd /path/to/evolutionary-strategies-agent
-	$ ./scripts/local_run_exp.sh configurations/scrimmage.json
-
-The JSON file specifies the setup of the problem. This will open up a tmux with two windows. One will be the master client, the other will be the workers. If it is working correctly, the worker clients should have a relay message about the average batch size every 5 seconds or so. There will also occasionally be an evaluation result message. I think every 10 minutes or so, the master client will output some data about the average training rewards and evaluation rewards.
+    $ python scripts/run_es.py \
+        redis_config/redis_master.conf \
+        configurations/scrimmage.json \
+        -s exp \
+        -l scripts/local_env_setup.sh \
+        --cluster_info xxx.xxx.xxx.3-xxx.xxx.xxx.8
 
 ## Customization
 

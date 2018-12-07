@@ -76,20 +76,20 @@ def dump_tabular():
     """
     _Logger.CURRENT.dump_tabular()
 
-def log(level=INFO, *args):
+def log(level, *args):
     """
     Write the sequence of args, with no separators, to the console and output files (if you've configured an output file).
     """
-    _Logger.CURRENT.log(*args, level=level)
+    _Logger.CURRENT.log(level, *args)
 
 def debug(*args):
-    log(*args, level=DEBUG)
+    log(DEBUG, *args)
 def info(*args):
-    log(*args, level=INFO)
+    log(INFO, *args)
 def warn(*args):
-    log(*args, level=WARN)
+    log(WARN, *args)
 def error(*args):
-    log(*args, level=ERROR)
+    log(ERROR, *args)
 
 def set_level(level):
     """
@@ -158,7 +158,7 @@ class _Logger(object):
         if self.tbwriter is not None:
             self.tbwriter.write_values(self.name2val)
             self.name2val.clear()
-    def log(self, level=INFO, *args):
+    def log(self, level, *args):
         if self.level <= level:
             self._do_log(*args)
 
