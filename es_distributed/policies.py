@@ -118,7 +118,7 @@ class Policy:
                     converted_actions[i] = list(np.unravel_index(
                         ac, env.action_space.nvec))
                 else:
-                    converted_actions[i] = float(action)
+                    converted_actions[i] = ac
 
             if save_obs:
                 obs.append(ob)
@@ -402,6 +402,10 @@ class LSTMPolicy(Policy):
                 self.probs = tf.nn.softmax(self.logits)
                 self.dist = \
                     MultinomialWithEntropy(total_count=1., probs=self.probs)
+
+                # self.sample = tf.squeeze(self.dist.sample([1]))
+                self.sample = tf.argmax(tf.squeeze(self.logits))
+
             elif isinstance(ac_space, gym.spaces.MultiDiscrete):
                 self.logits = []
                 self.probs_list = []
@@ -417,34 +421,32 @@ class LSTMPolicy(Policy):
                 self.probs = omega*self.probs + (1-omega)*uniform_dist
                 self.dist = \
                     MultinomialWithEntropy(total_count=1., probs=self.probs)
+                self.sample = tf.argmax(tf.squeeze(self.logits))
             else:
                 self.stats = {}
-                use_normal = True
-                if use_normal:
-                    self.stats['mean'] = \
-                        self.linear(output_values, 1, "mean",
-                               self.normalized_columns_initializer(0.01),
-                               bias_init=0)
-                    self.stats['stdev'] = \
-                        tf.exp(self.linear(output_values, 1, "stdev",
-                                      self.normalized_columns_initializer(0.01),
-                                      bias_init=0))
-                    self.dist = tf.contrib.distributions.Normal(
-                        self.stats['mean'], self.stats['stdev'])
-                else:
-                    self.stats['alpha'] = \
-                        tf.exp(self.linear(output_values, 1, "alpha",
-                                      self.normalized_columns_initializer(0.01),
-                                      bias_init=0))
-                    self.stats['beta'] = \
-                        tf.exp(self.linear(output_values, 1, "beta",
-                                      self.normalized_columns_initializer(0.01),
-                                      bias_init=0))
-                    self.dist = tf.distributions.Beta(
-                        self.stats['alpha'], self.stats['beta'])
+                self.out = \
+                    self.linear(output_values, ac_space.shape[0], "mean",
+                           self.normalized_columns_initializer(0.01),
+                           bias_init=0)
+                # self.stats['stdev'] = \
+                #     tf.exp(self.linear(output_values, 1, "stdev",
+                #                   self.normalized_columns_initializer(0.01),
+                #                   bias_init=0))
+                # self.dist = tf.contrib.distributions.Normal(
+                #     self.stats['mean'], self.stats['stdev'])
+                inf_high = np.isinf(ac_space.high)
+                inf_low = np.isinf(ac_space.low)
+                all_inf = np.all(inf_high) and np.all(inf_low)
+                none_inf = not np.any(inf_high) and not np.any(inf_low)
+                assert all_inf or none_inf, \
+                    ("action limits must either be all infinite or "
+                     "set to finite values")
 
-            # self.sample = tf.squeeze(self.dist.sample([1]))
-            self.sample = tf.argmax(tf.squeeze(self.logits))
+                if none_inf:
+                    self.sample = ac_space.low + \
+                        tf.sigmoid(self.out) * (ac_space.high - ac_space.low)
+                else:
+                    self.sample = self.out
 
             self.vf = \
                 tf.reshape(self.linear(output_values, 1, "value",
