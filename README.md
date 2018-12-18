@@ -18,36 +18,46 @@ The following work still needs to be done:
 * Turn this into a python package that can be installed?
 
 ## Installation Instructions
-First we will need to install redis (version 3.2 or greater). Sadly the apt-get package is not a new enough version so we will need to install from source. Here are the instructions I used from `scripts/dependencies.sh`
+First we will need to install redis (version 3.2 or greater).
 
-	$ wget --quiet http://download.redis.io/releases/redis-3.2.7.tar.gz -O redis-3.2.7.tar.gz
-	$ tar -xvzf redis-3.2.7.tar.gz
-	$ cd redis-3.2.7
-	$ make
-	$ sudo make install
-	$ sudo mkdir -p /etc/redis
-	$ sudo cp redis.conf /etc/redis # Setup default configuration file
-	$ cd ..
-	$ rm -rf redis-3.2.7 redis-3.2.7.tar.gz # Remove the installation files
+### redis on Ubuntu 18.04
+
+    $ sudo apt install redis # version is 4.0.9
+
+### redis on Ubuntu 16.04
+
+Sadly the apt-get package is not a new enough version so we will need to install from source. Here are the instructions I used from `scripts/dependencies.sh`
+
+  $ wget --quiet http://download.redis.io/releases/redis-3.2.7.tar.gz -O redis-3.2.7.tar.gz
+  $ tar -xvzf redis-3.2.7.tar.gz
+  $ cd redis-3.2.7
+  $ make
+  $ sudo make install
+  $ sudo mkdir -p /etc/redis
+  $ sudo cp redis.conf /etc/redis # Setup default configuration file
+  $ cd ..
+  $ rm -rf redis-3.2.7 redis-3.2.7.tar.gz # Remove the installation files
+
+### continuing ...
 
 Now we need to setup the pip packages. I recommend using virtualenv to create a new python environment to install these packages in. Here is a quick how-to on setting up a new virtualenv environment "evol-strats" in the `~/venvs/` folder using python2.
 
-	$ sudo apt-get install virtualenv -y
-	$ virtualenv ~/venvs/evol-strats -p $(which python2)
-	$ source ~/venvs/evol-strats/bin/activate # Enter virtual environment
-	(evol-strats) $ pip install click \
-			h5py  \
-			tensorflow==1.3.0 \
-			gym==0.10.8 \
-			grpcio==1.2.1 \
-			protobuf==3.3.0 \
-			redis \
-            psutils
-	(evol-strats) $ cd /path/to/scrimmage/python
+  $ sudo apt-get install virtualenv -y
+  $ virtualenv ~/venvs/evol-strats -p $(which python2)
+  $ source ~/venvs/evol-strats/bin/activate # Enter virtual environment
+  (evol-strats) $ pip install click \
+      h5py  \
+      tensorflow==1.3.0 \
+      gym==0.10.8 \
+      grpcio==1.2.1 \
+      protobuf==3.3.0 \
+      redis \
+      psutil
+  (evol-strats) $ cd /path/to/scrimmage/python
 
 The following command will need sudo if you installed the scrimmage python bindings for your system python to overwrite it in the virtualenv environment folder. It won't overwrite your system's scrimmage python binding. You might also need to run `scrimmage/setup/install-binaries.sh` with python 2 dependencies. More info on how to do that is located [here](https://github.com/gtri/scrimmage#install-binary-dependencies)
 
-	(evol-strats) $ pip install -e .
+  (evol-strats) $ pip install -e .
 
 To get out of the virtualenv environment, simply type `deactivate`.
 
@@ -78,7 +88,8 @@ For local training, do the following:
         redis_config/redis_master.conf \
         configurations/scrimmage.json \
         -s exp \
-        -l scripts/local_env_setup.sh \
+        --local-env-setup scripts/local_env_setup.sh \
+        -l ~/.rl_exp/my_exp \
         -j 1
 
 For remote training, say training on nodes xxx.xxx.xxx.3 through xxx.xxx.xxx.8, do
@@ -89,6 +100,21 @@ For remote training, say training on nodes xxx.xxx.xxx.3 through xxx.xxx.xxx.8, 
         -s exp \
         -l scripts/local_env_setup.sh \
         --cluster_info xxx.xxx.xxx.3-xxx.xxx.xxx.8
+
+## Tips
+
+``es_distributed.py`` forks itself and does not close down
+when you execute ``tmux kill-session -t exp`` so you can
+close things down with the following:
+
+  ``pkill -9 -f redis``
+
+On a cluster, it might look like this:
+
+  ``for i in {1..3}; do ssh 192.168.90.$i "pkill -f -9 redis"; done``
+
+Locally, it can be helpful to add ``--new_terminal`` and ``--nvim``
+options.
 
 ## Customization
 

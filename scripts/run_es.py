@@ -239,7 +239,7 @@ def main():
     def start_tmux():
         if args.new_terminal:
             sp.check_call([
-                "gnome-terminal", "-x", "tmux",
+                "gnome-terminal", "--", "tmux",
                 "new-session", "-s", args.session_name,
                 "-n", "redis"])
         else:
