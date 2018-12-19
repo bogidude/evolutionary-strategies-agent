@@ -59,6 +59,9 @@ def main():
         "-c", '--cluster_info', nargs='*', help='node ips')
     parser.add_argument(
         "--nvim", action="store_true", help='run in nvim terminal')
+    parser.add_argument(
+        "--ram-thresh", type=float, default=0,
+        help="ram usage before restarting job (local only, units are Gb)")
 
     NVIM_LISTEN_ADDRESS = \
         '/tmp/nvim_evolutionary_strat' + str(random.randint(0, 1e12))
@@ -158,7 +161,7 @@ def main():
             source_env_file()
             send_tmux_keys(start_cmd)
 
-    def start_workers(addresses, socket_file, port):
+    def start_workers(addresses, socket_file, port, new_term=True):
         host = addresses[0] if addresses else 'localhost'
         start_cmd = \
             (" python -m es_distributed.main workers "
@@ -169,7 +172,8 @@ def main():
 
         if args.nvim:
             if not addresses:
-                return [new_nvim_term() + nvim_rename_buffer("worker") +
+                new_nvim_term_str = new_nvim_term() if new_term else ""
+                return [new_nvim_term_str + nvim_rename_buffer("worker") +
                         source_env_file() + nvim_insert_mode() + start_cmd +
                         " --num_workers " + str(args.num_workers) + "<cr>"]
             else:
@@ -259,41 +263,64 @@ def main():
             return next((r.match(l) for l in f.read().splitlines()
                          if r.match(l))).group(1)
 
-    socket_file = get_config_val('unixsocket')
+    def get_port():
+        try:
+            port = get_config_val('port')
+        except StopIteration:
+            port = '6379'
 
-    try:
-        port = get_config_val('port')
-    except StopIteration:
-        port = '6379'
+        if port == '0':
+            port = None
 
-    if port == '0':
-        port = None
+        return port
 
+    def nvim_last_tab():
+        return nvim_terminal_mode() + r":$tabnext<cr>"
+
+    def start(addresses, socket_file, port):
+
+        start_tmux()
+
+        if args.nvim:
+            send_tmux_keys(
+                r'NVIM_LISTEN_ADDRESS=' + NVIM_LISTEN_ADDRESS + '; nvim')
+            wait_for_nvr()
+
+            start_term = "<esc>:term<cr>"
+
+            send_nvim_keys(start_term + start_redis(addresses, port))
+            send_nvim_keys(new_nvim_term() + start_tensorboard())
+            send_nvim_keys(
+                new_nvim_term() + start_master(addresses, socket_file, port))
+
+            for cmd in start_workers(addresses, socket_file, port):
+                send_nvim_keys(cmd)
+
+        else:
+            source_env_file()
+            start_redis(addresses, port)
+            start_tensorboard()
+            start_master(addresses, socket_file, port)
+            start_workers(addresses, socket_file, port)
 
     addresses = parse_addresses()
-    start_tmux()
+    socket_file = get_config_val('unixsocket')
+    port = get_port()
 
-    if args.nvim:
-        send_tmux_keys(
-            r'NVIM_LISTEN_ADDRESS=' + NVIM_LISTEN_ADDRESS + '; nvim')
-        wait_for_nvr()
-
-        start_term = "<esc>:term<cr>"
-
-        send_nvim_keys(start_term + start_redis(addresses, port))
-        send_nvim_keys(new_nvim_term() + start_tensorboard())
-        send_nvim_keys(
-            new_nvim_term() + start_master(addresses, socket_file, port))
-
-        for cmd in start_workers(addresses, socket_file, port):
-            send_nvim_keys(cmd)
-
-    else:
-        source_env_file()
-        start_redis(addresses, port)
-        start_tensorboard()
-        start_master(addresses, socket_file, port)
-        start_workers(addresses, socket_file, port)
+    start(addresses, socket_file, port)
+    if args.ram_thresh:
+        while True:
+            time.sleep(5)
+            if psutil.virtual_memory().available / 1e9 < args.ram_thresh:
+                print('shutting down and restarting job')
+                sp.call(['pkill', '-9', '-f', 'es_distributed.main workers'])
+                if args.nvim:
+                    send_nvim_keys(nvim_last_tab())
+                    for cmd in start_workers(
+                            addresses, socket_file, port, False):
+                        send_nvim_keys(cmd)
+                else:
+                    start_workers(addresses, socket_file, port)
 
 
 if __name__ == '__main__':
