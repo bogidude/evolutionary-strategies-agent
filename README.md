@@ -116,6 +116,11 @@ On a cluster, it might look like this:
 Locally, it can be helpful to add ``--new_terminal`` and ``--nvim``
 options.
 
+Finally, on ubuntu 18.04 (not 16.04), it seems that extended
+training results in unbounded RAM growth. To monitor the training
+and restart it when RAM usage gets above some bound, add "--ram-thresh 0.5"
+to restart jobs when there is less than 500Mb of RAM left.
+
 ## Customization
 
 These are the things I know in the JSON file:
