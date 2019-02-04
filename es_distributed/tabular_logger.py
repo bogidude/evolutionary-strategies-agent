@@ -41,7 +41,7 @@ class TbWriter(object):
         self.evwriter.Close()
 
 # ================================================================
-# API 
+# API
 # ================================================================
 
 def start(dir):
@@ -109,11 +109,11 @@ def get_expt_dir():
     return get_dir()
 
 # ================================================================
-# Backend 
+# Backend
 # ================================================================
 
 class _Logger(object):
-    DEFAULT = None # A logger with no output files. (See right below class definition) 
+    DEFAULT = None # A logger with no output files. (See right below class definition)
                    # So that you can still log to the terminal without setting up any output files
     CURRENT = None # Current logger being used by the free functions above
 
@@ -128,7 +128,7 @@ class _Logger(object):
             else:
                 if not os.path.exists(dir):
                     os.makedirs(dir)
-            self.text_outputs.append(open(os.path.join(dir, "log.txt"), "w"))
+            self.text_outputs.append(open(os.path.join(dir, "log.txt"), "a+"))
             self.tbwriter = TbWriter(dir=dir, prefix="events")
         else:
             self.tbwriter = None
@@ -162,7 +162,7 @@ class _Logger(object):
         if self.level <= level:
             self._do_log(*args)
 
-    # Configuration 
+    # Configuration
     # ----------------------------------------
     def set_level(self, level):
         self.level = level
@@ -173,13 +173,13 @@ class _Logger(object):
         for f in self.text_outputs[1:]: f.close()
         if self.tbwriter: self.tbwriter.close()
 
-    # Misc 
+    # Misc
     # ----------------------------------------
     def _do_log(self, *args):
         self._write_text(*(list(args) + ['\n']))
         for f in self.text_outputs:
             try: f.flush()
-            except OSError: print('Warning! OSError when flushing.')                
+            except OSError: print('Warning! OSError when flushing.')
     def _write_text(self, *strings):
         for f in self.text_outputs:
             for string in strings:

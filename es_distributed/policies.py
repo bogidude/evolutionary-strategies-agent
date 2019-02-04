@@ -5,6 +5,10 @@ import h5py
 import numpy as np
 import tensorflow as tf
 import tensorflow.contrib.rnn as rnn
+try:
+    import tensorflow.keras as Keras
+except ImportError:
+    import tensorflow.contrib.keras as Keras
 
 from . import tf_util as U
 
@@ -17,6 +21,14 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+# Possible activation functions
+activation_dict = {"relu": Keras.activations.relu,
+                   "elu": Keras.activations.elu,
+                   "softmax": Keras.activations.softmax,
+                   "linear": Keras.activations.linear,
+                   "none": Keras.activations.linear,
+                   "tanh": Keras.activations.tanh,
+                   "sigmoid": Keras.activations.sigmoid}
 
 
 class Policy:
@@ -77,7 +89,6 @@ class Policy:
         """
         env_timestep_limit = env.spec.tags.get('wrapper_config.TimeLimit.max_episode_steps')
         timestep_limit = env_timestep_limit if timestep_limit is None else min(timestep_limit, env_timestep_limit)
-        rews = []
         t = 0
 
         tuple_space = isinstance(env.observation_space, gym.spaces.Tuple)
@@ -89,6 +100,8 @@ class Policy:
             n = 1
             discrete_spaces = [self.space_to_int(env.action_space)]
 
+        rews = [[] for i in range(n)] if n > 1 else []
+        state_to_index_map = {}
         if save_obs:
             obs = []
         info = [{} for i in range(n)] if n > 1 else {}
@@ -98,6 +111,7 @@ class Policy:
         if not tuple_space:
             ob = [ob]
         last_features = [self.get_initial_features() for _ in range(n)]
+        init_num_entities = n
         for print_q in range(int(timestep_limit)):
             for i in range(n):
                 if tuple_space:
@@ -122,26 +136,52 @@ class Policy:
 
             if save_obs:
                 obs.append(ob)
-            # print('act = {}'.format(converted_actions))
+
             ob_, rew, done, temp_info = env.step(converted_actions)
-            if tuple_space:
-                for key in temp_info:
-                    for i in range(n):
-                        info[i][key] = temp_info[key][i]
+            # No entities remaining
+            if temp_info["entities"] == []:
+                break
+            # Create mapping from an entity id to rews index
+            # Should also map new entities added later on in the mission
+            if isinstance(temp_info["entities"], list):
+                for ent_id in temp_info["entities"]:
+                    if ent_id not in state_to_index_map:
+                        state_to_index_map[ent_id] = len(state_to_index_map)
             else:
-                info.update(temp_info)
+                ent_id = temp_info["entities"]
+                if ent_id not in state_to_index_map:
+                    state_to_index_map[ent_id] = len(state_to_index_map)
 
             ob_ = np.copy(ob_)
 
             if tuple_space:
                 if not done:
                     ob = ob_
+                    n = len(ob)
             else:
                 if not done:
                     ob = [ob_]
 
             if tuple_space:
-                rews.append(temp_info['reward'])
+                for key in temp_info:
+                    if isinstance(temp_info["entities"], list):
+                        for i, ent in enumerate(temp_info["entities"]):
+                            info[state_to_index_map[ent]][key] = temp_info[key][i]
+                    else:
+                        ent = temp_info["entities"]
+                        info[state_to_index_map[ent]][key] = temp_info[key]
+            else:
+                info.update(temp_info)
+
+            if tuple_space:
+                # When only one entity is left, temp_info["entities"] changes
+                # from a list to a int
+                if isinstance(temp_info["entities"], list):
+                    for i, ent in enumerate(temp_info["entities"]):
+                        rews[state_to_index_map[ent]].append(temp_info["reward"][i])
+                else:
+                    ent = temp_info["entities"]
+                    rews[state_to_index_map[ent]].append(temp_info["reward"])
             else:
                 rews.append(rew)
 
@@ -152,7 +192,7 @@ class Policy:
                 # print('rew = {}'.format(rew))
                 break
 
-        rews = np.array(rews, dtype=np.float32)
+        # rews = np.array(rews, dtype=np.float32)
         if save_obs:
             return rews, t, np.array(obs), info
         return rews, t, info
@@ -322,7 +362,7 @@ class LSTMPolicy(Policy):
         return self.state_init
 
 
-    def _initialize(self, ob_space, ac_space, architecture, use_conv_layer=False):
+    def _initialize(self, ob_space, ac_space, architecture, keep_prob=1.0, use_conv_layer=False):
         """Create convolutional layer followed 1 layer LSTM."""
         # super(LSTMPolicyBase, self).__init__(ob_space, ac_space, architecture)
         ############################################################
@@ -335,7 +375,7 @@ class LSTMPolicy(Policy):
         with tf.variable_scope(type(self).__name__) as scope:
             self.x = x = tf.placeholder(tf.float32, [None] + list(ob_space.shape))
             # Placeholder for keep probabliltiy for dropout, set to 1 during testing
-            self.keep_prob = tf.placeholder_with_default(1.0,[])
+            self.keep_prob = tf.placeholder_with_default(keep_prob,[])
             if use_conv_layer:
                 # the first 4 hidden layers are convolutional layers
                 # where the filter size is 3x3 and strides are of length 2
@@ -352,17 +392,24 @@ class LSTMPolicy(Policy):
             ############################################################
             sequence_length = tf.shape(self.x)[:1]
 
-            output_values = \
-                tf.contrib.layers.batch_norm(
-                    x, center=True, scale=True, is_training=True, scope='bn')
+            # output_values = \
+            #     tf.contrib.layers.batch_norm(
+            #         x, center=True, scale=True, is_training=True, scope='bn')
             output_values = x
             self.state_init = []
             self.state_in = []
             self.state_out = []
+
             for i, layer_i in enumerate(architecture):
-                import pdb
                 layer_type = layer_i['layer_type']
                 width = layer_i['width']
+                if "activation" in layer_i.keys():
+                    activation = activation_dict[layer_i["activation"]]
+                else:
+                    if layer_type == "fc":
+                        activation = activation_dict["relu"]
+                    else:
+                        activation = activation_dict["none"]
                 if layer_type == "lstm":
                     # introduce a "fake" batch dimension of 1 after flatten so that
                     # we can do LSTM over time dim after the flatten operation the
@@ -376,13 +423,21 @@ class LSTMPolicy(Policy):
                                        width, sequence_length, self.keep_prob)
                     self.state_init.append(layer[0])
                     self.state_in.append(layer[1])
-                    output_values = layer[2]
+                    tf.summary.histogram("LSTSM {} pre activation hist".format(i+1), layer[2])
+                    output_values = activation(layer[2])
+                    tf.summary.histogram("LSTSM {} post activation hist".format(i+1), output_values)
                     output_c, output_h = layer[3]
                     self.state_out.append([output_c[:1, :], output_h[:1, :]])
+
                 elif layer_type == "fc":
-                    self.fc = self.linear(output_values, width, "fc{}".format(i+1),
-                                     self.normalized_columns_initializer(0.01))
-                    self.fc_nonlinear = tf.nn.relu(self.fc)
+                    self.fc_nonlinear = tf.layers.dense(output_values, width,
+                                                        activation=activation,
+                                                        name="fc{}".format(i+1),
+                                                        kernel_initializer=self.normalized_columns_initializer(0.01))
+                    tf.summary.histogram("FC {} Hist".format(i+1), self.fc_nonlinear)
+                    # self.fc = self.linear(output_values, width, "fc{}".format(i+1),
+                    #                  self.normalized_columns_initializer(0.01))
+                    # self.fc_nonlinear = tf.nn.relu(self.fc)
                     self.fc_nonlinear_drop = tf.nn.dropout(self.fc_nonlinear,self.keep_prob)
 
                     output_values = self.fc_nonlinear_drop
@@ -397,13 +452,12 @@ class LSTMPolicy(Policy):
             # vf: value function (output size 1)
             ############################################################
             if isinstance(ac_space, gym.spaces.Discrete):
-                self.logits = self.linear(output_values, ac_space.n, "action",
-                                     self.normalized_columns_initializer(0.01))
-                self.probs = tf.nn.softmax(self.logits)
-                self.dist = \
-                    MultinomialWithEntropy(total_count=1., probs=self.probs)
-
-                # self.sample = tf.squeeze(self.dist.sample([1]))
+                self.logits = tf.layers.dense(output_values, ac_space.n,
+                                              name="action",
+                                              kernel_initializer=self.normalized_columns_initializer(0.01))
+                # self.logits = self.linear(output_values, ac_space.n, "action",
+                #                      self.normalized_columns_initializer(0.01))
+                tf.summary.histogram("Output Layer Hist", self.logits)
                 self.sample = tf.argmax(tf.squeeze(self.logits))
 
             elif isinstance(ac_space, gym.spaces.MultiDiscrete):
@@ -411,23 +465,22 @@ class LSTMPolicy(Policy):
                 self.probs_list = []
                 self.max_action_space = max(ac_space.nvec)
                 num_actions_per = [a for a in ac_space.nvec]
-
-                self.logits = self.linear(output_values, np.prod(num_actions_per), "action{}".format(i+1),
-                                     self.normalized_columns_initializer(0.01))
-                self.probs = tf.nn.softmax(self.logits)
-                # Add uniform distribution to maintain minimum probabilities
-                uniform_dist = tf.ones(shape=tf.shape(self.probs))/np.prod(num_actions_per)
-                omega = 0.9999
-                self.probs = omega*self.probs + (1-omega)*uniform_dist
-                self.dist = \
-                    MultinomialWithEntropy(total_count=1., probs=self.probs)
+                self.logits = tf.layers.dense(output_values, np.prod(num_actions_per),
+                                              name="action{}".format(i+1),
+                                              kernel_initializer=self.normalized_columns_initializer(0.01))
+                # self.logits = self.linear(output_values, np.prod(num_actions_per), "action{}".format(i+1),
+                #                      self.normalized_columns_initializer(0.01))
+                tf.summary.histogram("Output Layer Hist", self.logits)
                 self.sample = tf.argmax(tf.squeeze(self.logits))
             else:
                 self.stats = {}
-                self.out = \
-                    self.linear(output_values, ac_space.shape[0], "mean",
-                           self.normalized_columns_initializer(0.01),
-                           bias_init=0)
+                self.out = tf.layers.dense(output_values, ac_space.shape[0],
+                                           name="mean",
+                                           kernel_initializer=self.normalized_columns_initializer(0.01))
+                # self.out = \
+                #     self.linear(output_values, ac_space.shape[0], "mean",
+                #            self.normalized_columns_initializer(0.01),
+                #            bias_init=0)
                 # self.stats['stdev'] = \
                 #     tf.exp(self.linear(output_values, 1, "stdev",
                 #                   self.normalized_columns_initializer(0.01),
@@ -441,13 +494,15 @@ class LSTMPolicy(Policy):
                 assert all_inf or none_inf, \
                     ("action limits must either be all infinite or "
                      "set to finite values")
-
+                tf.summary.histogram("Output Layer Hist", self.out)
                 if none_inf:
                     self.sample = ac_space.low + \
                         tf.sigmoid(self.out) * (ac_space.high - ac_space.low)
                 else:
                     self.sample = self.out
 
+            # For visualizing all layers in the graph
+            self.merged = tf.summary.merge_all()
             self.vf = \
                 tf.reshape(self.linear(output_values, 1, "value",
                                   self.normalized_columns_initializer(1.0)), [-1])
@@ -480,8 +535,8 @@ class LSTMPolicy(Policy):
     @property
     def needs_ref_batch(self):
         return False
-    
-    
+
+
 
 
 class MujocoPolicy(Policy):

@@ -1,4 +1,6 @@
 *.pyc
 tags
+/build
+/dist
 .*.xml
 es_distributed.egg-info
