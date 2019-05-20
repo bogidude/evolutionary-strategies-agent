@@ -1,23 +1,26 @@
 {
   "config": {
     "calc_obstat_prob": 0.00,
-    "episodes_per_batch": 1000,
+    "episodes_per_batch": 10000,
     "eval_prob": 0.01,
     "l2coeff": 0.005,
     "noise_stdev": 0.02,
     "snapshot_freq": 1,
     "timesteps_per_batch": 10000,
     "return_proc_mode": "centered_rank",
-    "episode_cutoff_mode": "env_default"
+    "episode_cutoff_mode": "env_default",
+    "num_models_to_save": 10000,
+    "save_every_n_model": 10
   },
   "env": {
     "env_id": "scrimmage-v0",
     "visualise": "false",
     "port_num": "12345",
     "scrimmage_mission": "rlsimple.xml",
-    "global_sensor": "true",
+    "global_sensor": "false",
+    "static_obs_space": "false",
     "timestep": -0.1,
-    "combine_actors": "true"
+    "combine_actors": "false"
   },
   "exp_prefix": "scrimmage",
   "optimizer": {
@@ -31,14 +34,17 @@
       "architecture": [
         {
           "layer_type":"fc",
+          "activation": "relu",
           "width": 256
         },
         {
           "layer_type":"fc",
+          "activation": "relu",
           "width": 256
         }
       ]
     },
+    "keep_prob": 1.0,
     "type": "LSTMPolicy"
   }
 }

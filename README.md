@@ -10,12 +10,11 @@ The following work still needs to be done:
 
 * Figure out how to setup redis to work on the cluster - whether or not it opens ports, etc (done)
 * Figure out what neural network structure works best with evolutionary strategies
-* Use tensorflow APIs so we don't define our own linear layer, flatten, normalized columns, etc.
+* Use tensorflow APIs so we don't define our own linear layer, flatten, normalized columns, etc. (still needs to completed)
 * Update the running script to accept arguments like number of workers, where to connect for redis, save location (done)
 * Figure out how the network gets saved and loaded (done)
-* Reduce the code copied from A3C and try to import it from A3C instead? (import models from model.py if possible, etc.)
 * Double check multiple agents work (done)
-* Turn this into a python package that can be installed?
+* Turn this into a python package that can be installed? (done)
 
 ## Installation Instructions
 First we will need to install redis (version 3.2 or greater).
@@ -28,6 +27,7 @@ First we will need to install redis (version 3.2 or greater).
 
 Sadly the apt-get package is not a new enough version so we will need to install from source. Here are the instructions I used from `scripts/dependencies.sh`
 
+```bash
   $ wget --quiet http://download.redis.io/releases/redis-3.2.7.tar.gz -O redis-3.2.7.tar.gz
   $ tar -xvzf redis-3.2.7.tar.gz
   $ cd redis-3.2.7
@@ -37,14 +37,25 @@ Sadly the apt-get package is not a new enough version so we will need to install
   $ sudo cp redis.conf /etc/redis # Setup default configuration file
   $ cd ..
   $ rm -rf redis-3.2.7 redis-3.2.7.tar.gz # Remove the installation files
+```
 
 ### continuing ...
 
 Now we need to setup the pip packages. I recommend using virtualenv to create a new python environment to install these packages in. Here is a quick how-to on setting up a new virtualenv environment "evol-strats" in the `~/venvs/` folder using python2.
 
+```bash
   $ sudo apt-get install virtualenv -y
   $ virtualenv ~/venvs/evol-strats -p $(which python2)
   $ source ~/venvs/evol-strats/bin/activate # Enter virtual environment
+```
+Once the environment is set up, then the pip packages can be installed. The quickest way to install everything would be to just install this package.
+
+```bash
+  (evol-strats) $ cd /path/to/evolutionary-strategies-agent
+  (evol-strats) $ pip install -e .
+```
+You can also install each package separately as seen below. Note these package versions are the ones that have been used. Others might work but there are no guarantees.
+```bash
   (evol-strats) $ pip install click \
       h5py  \
       tensorflow==1.3.0 \
@@ -52,12 +63,16 @@ Now we need to setup the pip packages. I recommend using virtualenv to create a 
       grpcio==1.2.1 \
       protobuf==3.3.0 \
       redis \
-      psutil
+      psutil \
+      shutil
   (evol-strats) $ cd /path/to/scrimmage/python
+```
 
 The following command will need sudo if you installed the scrimmage python bindings for your system python to overwrite it in the virtualenv environment folder. It won't overwrite your system's scrimmage python binding. You might also need to run `scrimmage/setup/install-binaries.sh` with python 2 dependencies. More info on how to do that is located [here](https://github.com/gtri/scrimmage#install-binary-dependencies)
 
+```bash
   (evol-strats) $ pip install -e .
+```
 
 To get out of the virtualenv environment, simply type `deactivate`.
 
@@ -98,8 +113,24 @@ For remote training, say training on nodes xxx.xxx.xxx.3 through xxx.xxx.xxx.8, 
         redis_config/redis_master.conf \
         configurations/scrimmage.json \
         -s exp \
-        -l scripts/local_env_setup.sh \
+        --local-env-setup scripts/local_env_setup.sh \
+        -l ~/.rl_exp/my_exp \
         --cluster_info xxx.xxx.xxx.3-xxx.xxx.xxx.8
+
+To stop training running on nodes xxx.xxx.xxx.3 through xxx.xxx.xxx.8, add the ``-k`` flag to the above command
+
+By default, ``run_es.py`` will save the git commit hash and diff of evolutionary-strategies in the log directory as ``config/hashes.txt`` and ``/config/evolutionary-strats.diff`` respectively. If you have other repos you would also like to track the hashes and git diffs of for a given experiment (scrimmage for example), you can use the `--git-dir` argument. For example, in the following:
+
+    $ python scripts/run_es.py \
+        redis_config/redis_master.conf \
+        configurations/scrimmage.json \
+        -s exp \
+        --local-env-setup scripts/local_env_setup.sh \
+        -l ~/.rl_exp/my_exp \
+        --git-dir /path/to/scrimmage \
+        --git-dir /path/to/example_repo
+
+The current hashes of evolutionary strategies, scrimmage, and example_repo will be saved to `~/.rl_exp/my_exp/config/hashes.txt` and diffs of the repos will be saved under `~/.rl_exp/my_exp/config/scrimmage.diff` and `~/.rl_exp/my_exp/config/example_repo.diff`.
 
 ## Tips
 
@@ -126,13 +157,17 @@ to restart jobs when there is less than 500Mb of RAM left.
 These are the things I know in the JSON file:
 
 * **config -> eval_prob** - the probability the workers will do an evaluation experiment instead of a training experiment. It just lets you know how the current parameters are doing for a single experiment.
+* **config -> num\_models\_to\_save** - The number of last checkpoints of the model to keep
 * **env** - This is the information that we need to give to openai to create a scrimmage gym environment. This stuff can be changed as needed
+ * **env -> global\_sensor** - Use just one agent's sensor information for all agents
+ * **env -> static\_obs\_space** - Setting this to false will tell scrimmage to fill in state information for missing entities
+ * **env -> combine_actors** - Treat separate agents in scrimmage as a single large agent (combine actions, etc.)
 * **exp_prefix** - Just leave this as scrimmmage because I've hard coded this to work for now
 * optimizer - We can change the optimizer a little bit here. I think this goes into tf_utils.py and creates an optimizer from there. It can probably be left to Adam
-* **policy -> type** - This creates a neural network the way done in A3C. Leave it as is for now
-* **policy -> args** - Here we can specify the network shape and type. 
-
-
+* **policy -> type** - This creates a neural network of the type LSTMPolicy. Leave it as is for now as we don't have to use LSTMs in this policy and we don't have any other policy types
+* **policy -> args** - Here we can specify the network shape and type.
+* **policy -> args -> keep_prob** - The probability to keep layers for dropout
+* **policy -> args -> architecture** - List of layers defining the neural network. The layer types can be LSTM or fully-connected. The activation function for each layer can also be specified.
 
 # OLD README BELOW
 

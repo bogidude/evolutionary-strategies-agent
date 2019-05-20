@@ -7,12 +7,13 @@ import time
 import multiprocessing as mp
 import random
 import psutil
+import shutil
+import errno
 
 try:
     import lvdb
 except ImportError:
     pass
-
 
 def print_sockaddrs():
     """Copied from neovim-remote.
@@ -62,6 +63,11 @@ def main():
     parser.add_argument(
         "--ram-thresh", type=float, default=0,
         help="ram usage before restarting job (local only, units are Gb)")
+    parser.add_argument(
+        "-k", "--kill", action="store_true",
+        help="Close running agents")
+    parser.add_argument("--git-dir", action="append", type=str,
+        help="Git directory to save current hash and git diff of. Can be added multiple times for tracking more than one git directory")
 
     NVIM_LISTEN_ADDRESS = \
         '/tmp/nvim_evolutionary_strat' + str(random.randint(0, 1e12))
@@ -145,7 +151,7 @@ def main():
              " --master_host " + host +
              " --log_dir " + args.log_dir + " " +
              " --exp_file " + args.exp_file)
-        if port: 
+        if port:
             start_cmd += " --master_port " + str(port) + " "
 
         if addresses:
@@ -160,6 +166,30 @@ def main():
             new_tmux_term("master")
             source_env_file()
             send_tmux_keys(start_cmd)
+
+    def kill_processes(addresses, socket_file, port):
+        kill_cmd = "pkill -9 -f \"python -m es_distributed.main\""
+        kill_cmd_redis = "pkill -f \"redis\""
+        if args.nvim:
+            if not addresses:
+                # TODO: figure out correct kill process here
+                raise NotImplementedError("kill arg not supported with nvim locally")
+            else:
+                # TODO: figure out correct kill process here
+                raise NotImplementedError("kill arg not supported with nvim " +
+                                          "on multiple addresses")
+        else:
+            if not addresses:
+                # TODO: figure out correct kill process here
+                raise NotImplementedError("kill arg not supported locally yet")
+            else:
+                for i, addr in enumerate(addresses):
+                    print("Killing workers on {}".format(addr))
+                    sp.call(["ssh", ssh_login(addr), "{}".format(
+                        kill_cmd)])
+                    sp.call(["ssh", ssh_login(addr), "{}".format(
+                        kill_cmd_redis)])
+            return None
 
     def start_workers(addresses, socket_file, port, new_term=True):
         host = addresses[0] if addresses else 'localhost'
@@ -193,11 +223,15 @@ def main():
             if not addresses:
                 new_tmux_term("worker")
                 source_env_file()
-                send_tmux_keys(start_cmd)
+                send_tmux_keys(start_cmd + " --num_workers " +
+                        str(args.num_workers))
             else:
                 for i, addr in enumerate(addresses):
                     # 2 taken with redis/master on first worker
-                    num_workers = 24 if i > 0 else 22
+                    if args.num_workers == mp.cpu_count():
+                        num_workers = 24 if i > 0 else 22
+                    else:
+                        num_workers = args.num_workers
                     new_tmux_term(addr)
                     source_env_file()
                     send_tmux_keys("ssh {} 'source {} && {}'".format(
@@ -247,6 +281,11 @@ def main():
                 "new-session", "-s", args.session_name,
                 "-n", "redis"])
         else:
+            # Restart tmux terminal by killing it first
+            sp.call(["tmux", "kill-session", "-t",
+                args.session_name])
+            # Give time to for tmux to finish closing session
+            time.sleep(0.1)
             sp.check_call([
                 "tmux", "new-session", "-s", args.session_name,
                 "-n", "redist", '-d'])
@@ -277,8 +316,53 @@ def main():
     def nvim_last_tab():
         return nvim_terminal_mode() + r":$tabnext<cr>"
 
-    def start(addresses, socket_file, port):
+    def save_configs():
+        # Create a config folder in the log directory to hold all the configs
+        # If it already exists, leave it alone
+        log_dir_config = args.log_dir + "/config"
+        try:
+            os.makedirs(log_dir_config)
+        except OSError as e:
+            if e.errno == errno.EEXIST and os.path.isdir(log_dir_config):
+                pass
+            else:
+                raise
+        shutil.copy2(args.exp_file, log_dir_config)
+        shutil.copy2(args.redis_conf, log_dir_config)
+        file_path = os.path.abspath(__file__)
+        k = file_path.rfind("/")
+        with open(os.path.join(log_dir_config, "hashes.txt"), 'w') as f:
+            original_path = os.getcwd()
+            os.chdir(file_path[:k])
+            with open(os.path.join(log_dir_config, "evolutionary-strats.diff"), "w") as patch:
+                patch.write(str(sp.check_output(["git", "diff"])))
+            f.write("Evolutionary-Strategies hash: " + str(sp.check_output(["git", "rev-parse", "HEAD"]).strip()) + "\n")
+            if args.git_dir is not None:
+                for path in args.git_dir:
+                    try:
+                        os.chdir(os.path.expanduser(path))
+                    except OSError as err:
+                        print("\n\nA directory added with the --git-dir flag is not valid\n")
+                        raise
+                    if path.endswith("/"):
+                        name_idx = path[:-1].rfind("/")
+                        name = path[name_idx+1:-1]
+                    else:
+                        name_idx = path.rfind("/")
+                        name = path[name_idx+1:]
+                    with open(os.path.join(log_dir_config, name + ".diff"), "w") as patch:
+                        patch.write(str(sp.check_output(["git", "diff"])))
+                    f.write(name + " hash: " + str(sp.check_output(["git", "rev-parse", "HEAD"]).strip()) + "\n")
+            os.chdir(original_path)
+        if args.local_env_setup:
+            shutil.copy2(args.local_env_setup, log_dir_config)
 
+    def start(addresses, socket_file, port):
+        if args.kill:
+            kill_processes(addresses, socket_file, port)
+            return
+
+        save_configs()
         start_tmux()
 
         if args.nvim:

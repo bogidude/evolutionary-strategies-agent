@@ -13,6 +13,7 @@ import scrimmage.bindings
 import tensorflow as tf
 import os
 import pdb
+import shutil
 
 try:
     import lvdb
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 Config = namedtuple('Config', [
     'l2coeff', 'noise_stdev', 'episodes_per_batch', 'timesteps_per_batch',
     'calc_obstat_prob', 'eval_prob', 'snapshot_freq',
-    'return_proc_mode', 'episode_cutoff_mode'
+    'return_proc_mode', 'episode_cutoff_mode', 'num_models_to_save', 'save_every_n_model'
 ])
 Task = namedtuple('Task', ['params', 'ob_mean', 'ob_std', 'timestep_limit'])
 Result = namedtuple('Result', [
@@ -128,7 +129,7 @@ def batched_weighted_sum(weights, vecs, batch_size):
 
 
 def create_scrimmage_env(env_id, visualise, port_num, scrimmage_mission,
-                         timestep, global_sensor, combine_actors):
+                         timestep, global_sensor, combine_actors, static_obs_space = "True"):
     """Add scrimmage to gym registry."""
     try:
         return gym.make(env_id)
@@ -146,6 +147,7 @@ def create_scrimmage_env(env_id, visualise, port_num, scrimmage_mission,
             kwargs={"enable_gui": boole(visualise),
                     "mission_file": mission_file,
                     "global_sensor": boole(global_sensor),
+                    "static_obs_space": boole(static_obs_space),
                     "timestep": float(timestep),
                     "combine_actors": boole(combine_actors)}
         )
@@ -212,6 +214,15 @@ def run_master(master_redis_cfg, log_dir, exp):
     logger.info('Tabular logging to {}'.format(log_dir))
     tlogger.start(log_dir)
     config, env, sess, policy = setup(exp, single_threaded=False)
+    mission_file = \
+            scrimmage.utils.find_mission(exp['env']['scrimmage_mission'])
+    save_mission_loc = log_dir + "/config/" + exp['env']['scrimmage_mission']
+    save_mission_loc_final = save_mission_loc
+    counter = 1
+    while os.path.exists(save_mission_loc_final):
+        save_mission_loc_final = save_mission_loc[:-4] + "_{}.xml".format(counter)
+        counter = counter + 1
+    shutil.copy2(mission_file, save_mission_loc_final)
     master = MasterClient(master_redis_cfg)
     optimizer = {'sgd': SGD, 'adam': Adam}[exp['optimizer']['type']](policy, **exp['optimizer']['args'])
     noise = SharedNoiseTable()
@@ -247,7 +258,7 @@ def run_master(master_redis_cfg, log_dir, exp):
     ###########################################################
     # main learning loop
     ###########################################################
-    saver = tf.train.Saver()
+    saver = tf.train.Saver(max_to_keep=config.num_models_to_save)
     last_checkpoint = tf.train.latest_checkpoint(os.path.abspath(log_dir))
     if last_checkpoint:
         saver.restore(sess, last_checkpoint)
@@ -398,8 +409,8 @@ def run_master(master_redis_cfg, log_dir, exp):
         record_info("Population", population_infos)
 
         tlogger.dump_tabular()
-
-        saver.save(sess, os.path.abspath(log_dir) + "/model.ckpt", global_step=curr_task_id)
+        if (curr_task_id % config.save_every_n_model) == 0:
+            saver.save(sess, os.path.abspath(log_dir) + "/model.ckpt", global_step=curr_task_id)
 
         # if config.snapshot_freq != 0 and curr_task_id % config.snapshot_freq == 0:
         #     import os.path as osp
@@ -449,9 +460,11 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
     worker_id = rs.randint(2 ** 31)
 
     assert policy.needs_ob_stat == (config.calc_obstat_prob != 0)
-
+    win = 0
+    loss = 0
+    draw = 0
     ###########################################################
-    # worker loop 
+    # worker loop
     ###########################################################
     while True:
         task_id, task_data = worker.get_current_task()
@@ -469,14 +482,16 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 info = [info]
                 # convert to column vec for compatiblity with multi-vehicle
                 # case
-                eval_rews = eval_rews[:, np.newaxis] 
+                # eval_rews = eval_rews[:, np.newaxis]
 
-            eval_rews = [eval_rews[:, i] for i in range(len(info))]
+            # eval_rews = [eval_rews[:, i] for i in range(len(info))]
             eval_length = [eval_length for i in range(len(info))]
 
+            val = 0
             for i in range(len(info)):
-                eval_return = eval_rews[i].sum()
-                logger.info('Eval result: task={} return={:.3f} length={}'.format(task_id, eval_return, eval_length))
+                eval_return = sum(eval_rews[i]) # sum agent i's reward over the entire mission
+                val = val + eval_return
+                logger.info('Eval result: task={} return={: 7.3f} length={}'.format(task_id, eval_return, eval_length))
                 worker.push_result(task_id, Result(
                     worker_id=worker_id,
                     noise_inds_n=None,
@@ -490,6 +505,15 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                     ob_count=None,
                     info=adjust_info(info[i])
                 ))
+            if val > 0:
+                    win = win + 1.0
+            elif val < 0:
+                loss = loss + 1.0
+            else:
+                draw = draw + 1.0
+            total = int(win + loss + draw)
+            w_rate = win / (total)
+            logger.info("Win rate after {:3d} missions: {:4.3f}".format(total, w_rate))
         else:
             # Rollouts with noise
             noise_inds, returns, signreturns, lengths = [], [], [], []
@@ -516,9 +540,10 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                 if tuple_space:
                     n = len(env.observation_space.spaces)
                     for i in range(n):
+                        # Fix how rewards are handled here to allow for entities dying
                         noise_inds.append(noise_idx)
-                        returns.append([rews_pos[:, i].sum(), rews_neg[:, i].sum()])
-                        signreturns.append([np.sign(rews_pos[:, i]).sum(), np.sign(rews_neg[:, i]).sum()])
+                        returns.append([sum(rews_pos[i]), sum(rews_neg[i])])
+                        signreturns.append([np.sign(rews_pos[i]).sum(), np.sign(rews_neg[i]).sum()])
                         lengths.append([len_pos, len_neg])
 
                         adjusted_info_pos = adjust_info(info_pos[i])
@@ -528,7 +553,7 @@ def run_worker(relay_redis_cfg, noise, min_task_runtime=.2):
                         infos.append(adjusted_info_neg)
                 else:
                     noise_inds.append(noise_idx)
-                    returns.append([rews_pos.sum(), rews_neg.sum()])
+                    returns.append([sum(rews_pos), sum(rews_neg)])
                     signreturns.append([np.sign(rews_pos).sum(), np.sign(rews_neg).sum()])
                     lengths.append([len_pos, len_neg])
                     infos.append(info_pos)

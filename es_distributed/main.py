@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import sys
+import signal
+import multiprocessing as mp
 
 import click
 
@@ -85,18 +87,34 @@ def workers(master_host, master_port, relay_socket_path, num_workers):
     else:
         master_redis_cfg = {'unix_socket_path': relay_socket_path}
         relay_redis_cfg = {'unix_socket_path': relay_socket_path}
-    if os.fork() == 0:
+    child_pid_list = []
+    relay_pid = os.fork()
+    if relay_pid == 0:
         # This is the interconnect between master and the workers
         RelayClient(master_redis_cfg, relay_redis_cfg).run()
         return
+    child_pid_list.append(relay_pid)
     # Start the workers
     noise = SharedNoiseTable()  # Workers share the same noise
-    num_workers = num_workers if num_workers else os.cpu_count()
+    num_workers = num_workers if num_workers else mp.cpu_count()
     logging.info('Spawning {} workers'.format(num_workers))
+    def shutdown(signal_, frame):
+        logging.info("Received {} on pid: {}".format(signal_, os.getpid()))
+        for pid in child_pid_list:
+            logging.info("Killing {}".format(pid))
+            os.kill(pid, signal.SIGINT)
+
+    signal.signal(signal.SIGHUP, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
     for _ in range(num_workers):
-        if os.fork() == 0:
+        os_child_id = os.fork()
+        if os_child_id == 0:
             run_worker(relay_redis_cfg, noise=noise)
             return
+        else:
+            child_pid_list.append(os_child_id)
     os.wait()
 
 
